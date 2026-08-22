@@ -1,0 +1,63 @@
+[tool.ruff]
+# Target Python version.
+target-version = "py310"
+
+# Exclude a variety of common directories.
+exclude = [
+    ".git",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+]
+
+# Configure line length and formatting standards
+line-length = 100
+indent-width = 4
+
+[tool.ruff.lint]
+# Select rules:
+# E/F: pycodestyle / Pyflakes
+# I: isort (import sorting)
+# B: flake8-bugbear (common design flaws/bugs)
+# C4: flake8-comprehensions (better list/dict comprehensions)
+# UP: pyupgrade (modernize Python syntax)
+# S: flake8-bandit (basic security/common pitfalls checking)
+select = [
+    "E", "F",
+    "I",
+    "B",
+    "C4",
+    "UP",
+    "S",
+]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+# Assertions are standard practice in tests
+"tests/**" = ["S101"]
+# If any test folders are named differently or have specific patterns:
+"test_*.py" = ["S101"]
+
+# Allow fixable rules to be automatically fixed.
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.format]
+# Use double quotes for strings.
+quote-style = "double"
+
+# Indent with spaces, rather than tabs.
+indent-style = "space"
+
+# Respect magic trailing commas.
+skip-magic-trailing-comma = false
+
+# Automatically detect the appropriate line ending.
+line-ending = "auto"

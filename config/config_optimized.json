@@ -1,0 +1,8 @@
+{
+    "Z_SCORE_THRESHOLD": 1.5,
+    "MIN_BARS_FOR_STATS": 20,
+    "WHALE_INTENSITY_THRESHOLD": 1.5,
+    "MIN_SWEEP_DOLLAR_FLOW": 100000.0,
+    "blacklist_ticker_strategies": {},
+    "ENABLE_SHORT_STRATEGIES": true
+}
