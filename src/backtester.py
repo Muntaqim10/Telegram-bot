@@ -18,15 +18,13 @@ class IntradayBacktester:
         self.training_data = []
         
     def load_historical_data(self, data_dir: str) -> dict:
-        """Loads downloaded 1-minute CSVs for Major Indexes & Mag 7 stocks into a dictionary of DataFrames."""
-        from src.data.historical_downloader import MAG7_AND_INDEXES
+        """Loads downloaded 1-minute CSVs for the ML training universe."""
         data = {}
         csv_files = glob.glob(os.path.join(data_dir, "*_1m.csv"))
         for file in csv_files:
             ticker = os.path.basename(file).split("_")[0]
-            if ticker in MAG7_AND_INDEXES:
-                df = pd.read_csv(file, parse_dates=["time"], index_col="time")
-                data[ticker] = df
+            df = pd.read_csv(file, parse_dates=["time"], index_col="time")
+            data[ticker] = df
         return data
 
     async def run_simulation(self, data_dir: str):
@@ -51,6 +49,9 @@ class IntradayBacktester:
                 
                 # We need features at the exact moment of the breakout
                 features_at_entry = {}
+                
+                stop_loss = 0.0
+                take_profit = 0.0
                 
                 for timestamp, row in daily_df.iterrows():
                     price = row["close"]
@@ -84,6 +85,19 @@ class IntradayBacktester:
                             spy_vwap = spy_state.get("vwap")
                             spy_corr = spy_state.get("last_price") / spy_vwap if spy_vwap else 1.0
                             
+                            # Establish SL/TP
+                            current_atr = 1.5
+                            if ticker in self.engine.orb_strategy.intraday_state and "atr" in self.engine.orb_strategy.intraday_state[ticker]:
+                                current_atr = self.engine.orb_strategy.intraday_state[ticker]["atr"]
+                            
+                            atr_dist = current_atr * self.engine.risk_manager.atr_multiplier
+                            if signal_direction == "Long":
+                                stop_loss = signal_entry_price - atr_dist
+                                take_profit = signal_entry_price + (atr_dist * 2.0)
+                            else:
+                                stop_loss = signal_entry_price + atr_dist
+                                take_profit = signal_entry_price - (atr_dist * 2.0)
+                            
                             features_at_entry = {
                                 "ticker": ticker,
                                 "date": date,
@@ -100,27 +114,38 @@ class IntradayBacktester:
                                 "lod_ratio": signal.get("lod_ratio", 1.0)
                             }
                     else:
-                        # If signal fired, we track the max favorable excursion for the rest of the day
-                        pass
-                
-                # End of Day Evaluation
-                if signal_fired:
-                    daily_high = daily_df["high"].max()
-                    daily_low = daily_df["low"].min()
-                    
-                    is_success = 0
-                    if signal_direction == "Long":
-                        max_gain = (daily_high - signal_entry_price) / signal_entry_price
-                        if max_gain >= 0.05: # >5% runner
-                            is_success = 1
-                    else:
-                        max_gain = (signal_entry_price - daily_low) / signal_entry_price
-                        if max_gain >= 0.05:
-                            is_success = 1
-                            
-                    features_at_entry["target"] = is_success
-                    features_at_entry["max_gain"] = max_gain
-                    self.training_data.append(features_at_entry)
+                        # Path-aware evaluation
+                        if signal_direction == "Long":
+                            if price <= stop_loss:
+                                features_at_entry["target"] = 0
+                                features_at_entry["max_gain"] = (price - signal_entry_price) / signal_entry_price
+                                self.training_data.append(features_at_entry)
+                                break
+                            elif price >= take_profit:
+                                features_at_entry["target"] = 1
+                                features_at_entry["max_gain"] = (price - signal_entry_price) / signal_entry_price
+                                self.training_data.append(features_at_entry)
+                                break
+                        else: # Short
+                            if price >= stop_loss:
+                                features_at_entry["target"] = 0
+                                features_at_entry["max_gain"] = (signal_entry_price - price) / signal_entry_price
+                                self.training_data.append(features_at_entry)
+                                break
+                            elif price <= take_profit:
+                                features_at_entry["target"] = 1
+                                features_at_entry["max_gain"] = (signal_entry_price - price) / signal_entry_price
+                                self.training_data.append(features_at_entry)
+                                break
+                else:
+                    # End of Day Evaluation if SL/TP never hit
+                    if signal_fired and "target" not in features_at_entry:
+                        features_at_entry["target"] = 0 # Default to 0 if TP not hit
+                        if signal_direction == "Long":
+                            features_at_entry["max_gain"] = (price - signal_entry_price) / signal_entry_price
+                        else:
+                            features_at_entry["max_gain"] = (signal_entry_price - price) / signal_entry_price
+                        self.training_data.append(features_at_entry)
                     
         log.info(f"Backtest complete. Generated {len(self.training_data)} training samples.")
         

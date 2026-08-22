@@ -1,13 +1,14 @@
 import aiohttp
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 log = logging.getLogger(__name__)
 
 class OptionsPricer:
     """
-    Evaluates real-time options chains to ensure the contract is not overpriced.
-    Calculates Delta-to-Premium ratios and checks for IV Bloat to prevent IV crush.
+    Evaluates real-time options chains to ensure the contract is not overpriced,
+    meets liquidity thresholds, is affordable for small accounts, and mathematically
+    viable based on projected take-profit (breakeven gate).
     """
     def __init__(self, tradier_token: str):
         self.token = tradier_token
@@ -16,9 +17,15 @@ class OptionsPricer:
             "Accept": "application/json"
         }
         
-    async def evaluate_contract(self, ticker: str, expiration: str, strike: float, option_type: str) -> Dict[str, Any]:
+    async def find_optimal_contract(
+        self, ticker: str, expiration: str, target_strike: float, 
+        option_type: str, take_profit: float
+    ) -> Dict[str, Any]:
         """
-        Fetches the specific contract's Greeks and premium to evaluate its fairness.
+        Scans the chain for an optimal contract near the target strike that passes:
+        1. Liquidity (OI/Volume + tight spread)
+        2. Affordability (ask <= $2.50)
+        3. Breakeven (target take_profit clears the strike + premium)
         """
         url = f"https://api.tradier.com/v1/markets/options/chains?symbol={ticker}&expiration={expiration}&greeks=true"
         
@@ -30,7 +37,8 @@ class OptionsPricer:
             "bid": 0.0,
             "ask": 0.0,
             "premium_ratio": 0.0,
-            "reason": ""
+            "reason": "",
+            "target_strike": target_strike
         }
         
         try:
@@ -46,7 +54,7 @@ class OptionsPricer:
                         options = [options]
                         
                     # Calculate GEX (Gamma Exposure), Call vs Put Money Flow & IV Skew across the chain
-                    best_gex_strike = strike
+                    best_gex_strike = target_strike
                     max_gex = 0.0
                     total_call_gex = 0.0
                     total_put_gex = 0.0
@@ -54,6 +62,8 @@ class OptionsPricer:
                     total_put_dollar_flow = 0.0
                     call_iv_list = []
                     put_iv_list = []
+
+                    valid_contracts = [] # To store contracts matching our option_type for later filtering
 
                     for opt in options:
                         o_type = opt.get("option_type", "").lower()
@@ -74,8 +84,7 @@ class OptionsPricer:
                             total_call_gex += gex
                             total_call_dollar_flow += dflow
                             if iv > 0: call_iv_list.append(iv)
-                            # For Call alerts, search for OTM strikes above target within 3% range
-                            if o_type == option_type.lower() and strike * 0.99 <= o_strike <= strike * 1.03:
+                            if o_type == option_type.lower() and target_strike * 0.95 <= o_strike <= target_strike * 1.05:
                                 if gex > max_gex:
                                     max_gex = gex
                                     best_gex_strike = o_strike
@@ -83,11 +92,13 @@ class OptionsPricer:
                             total_put_gex += gex
                             total_put_dollar_flow += dflow
                             if iv > 0: put_iv_list.append(iv)
-                            # For Put alerts, search for OTM strikes below target within 3% range
-                            if o_type == option_type.lower() and strike * 0.97 <= o_strike <= strike * 1.01:
+                            if o_type == option_type.lower() and target_strike * 0.95 <= o_strike <= target_strike * 1.05:
                                 if gex > max_gex:
                                     max_gex = gex
                                     best_gex_strike = o_strike
+
+                        if o_type == option_type.lower():
+                            valid_contracts.append(opt)
 
                     result["gex_target_strike"] = best_gex_strike
                     result["gex_value"] = max_gex
@@ -108,32 +119,92 @@ class OptionsPricer:
                     else:
                         result["flow_bias"] = "BALANCED FLOW"
 
-                    result["flow_ratio"] = total_call_dollar_flow / (total_put_dollar_flow + 1.0) if option_type.lower() == "call" else total_put_dollar_flow / (total_call_dollar_flow + 1.0)
+                    if option_type.lower() == "call":
+                        result["flow_ratio"] = total_call_dollar_flow / (total_put_dollar_flow + 1.0) 
+                    else:
+                        result["flow_ratio"] = total_put_dollar_flow / (total_call_dollar_flow + 1.0)
 
-                    # Find our specific contract
-                    contract = None
-                    for opt in options:
-                        if abs(opt.get("strike", 0.0) - strike) < 0.01 and opt.get("option_type", "").lower() == option_type.lower():
-                            contract = opt
-                            break
-                            
-                    if not contract and best_gex_strike != strike:
-                        # Fallback to GEX target strike contract if exact strike was unavailable
-                        for opt in options:
-                            if abs(opt.get("strike", 0.0) - best_gex_strike) < 0.01 and opt.get("option_type", "").lower() == option_type.lower():
-                                contract = opt
-                                break
-
-                    if not contract:
-                        log.warning(f"Contract {ticker} {strike} {option_type} not found in chain.")
+                    if not valid_contracts:
+                        log.warning(f"No {option_type} contracts found for {ticker} at {expiration}.")
                         return result
+
+                    # Sort contracts by distance to target_strike (preferring strikes slightly closer to ITM if equidistant)
+                    # For calls: prefer lower strike (closer to ITM) if distance is equal. For puts: prefer higher.
+                    def sort_key(c):
+                        s = float(c.get("strike", 0.0))
+                        dist = abs(s - target_strike)
+                        # Penalty for being further OTM to break ties
+                        otm_penalty = s if option_type.lower() == "call" else -s 
+                        return (dist, otm_penalty)
+
+                    valid_contracts.sort(key=sort_key)
+
+                    optimal_contract = None
+                    fallback_contract = None # Most liquid contract that fails affordability/breakeven
+                    fail_reason = ""
+
+                    for contract in valid_contracts:
+                        strike = float(contract.get("strike", 0.0))
+                        bid = contract.get("bid", 0.0) or 0.0
+                        ask = contract.get("ask", 0.0) or 0.0
+                        mid = (bid + ask) / 2.0
+                        vol = contract.get("volume", 0) or 0
+                        oi = contract.get("open_interest", 0) or 0
+
+                        # Gate 1: Liquidity Filter
+                        spread = ask - bid
+                        spread_ratio = spread / mid if mid > 0 else 1.0
+                        is_liquid = (oi >= 50 or vol >= 20) and (spread_ratio <= 0.30)
                         
-                    # Extract Data & Institutional Options Flow (Whale Detection)
-                    result["bid"] = contract.get("bid", 0.0)
-                    result["ask"] = contract.get("ask", 0.0)
-                    volume = contract.get("volume", 0) or 0
-                    open_interest = contract.get("open_interest", 0) or 0
-                    greeks = contract.get("greeks", {})
+                        if not is_liquid:
+                            continue # Skip illiquid contracts entirely
+                            
+                        # If it's liquid, save it as a fallback in case nothing passes affordability/breakeven
+                        if not fallback_contract:
+                            fallback_contract = contract
+
+                        # Gate 2: Affordability Filter (Max $2.50 premium)
+                        if ask > 2.50:
+                            fail_reason = f"Premium too expensive (${ask:.2f} ask)."
+                            continue
+                            
+                        # Gate 3: Breakeven Gate
+                        if option_type.lower() == "call":
+                            breakeven = strike + ask
+                            if take_profit < breakeven:
+                                fail_reason = f"Breakeven (${breakeven:.2f}) exceeds TP (${take_profit:.2f})."
+                                continue
+                        else: # Put
+                            breakeven = strike - ask
+                            if take_profit > breakeven:
+                                fail_reason = f"Breakeven (${breakeven:.2f}) below TP (${take_profit:.2f})."
+                                continue
+                                
+                        # If we get here, it passed all gates!
+                        optimal_contract = contract
+                        break
+
+                    final_contract = optimal_contract
+
+                    if not final_contract:
+                        if fallback_contract:
+                            # We found a liquid contract but it failed affordability or breakeven
+                            final_contract = fallback_contract
+                            result["verdict"] = "UNTRADEABLE AT SIZE"
+                            result["reason"] = f"Valid setup, not tradeable at your size. {fail_reason}"
+                        else:
+                            # Literally zero liquid contracts found
+                            result["verdict"] = "POOR VALUE"
+                            result["reason"] = "No liquid options available for this setup."
+                            return result
+
+                    # Extract Data for the final contract
+                    result["target_strike"] = float(final_contract.get("strike", 0.0))
+                    result["bid"] = final_contract.get("bid", 0.0)
+                    result["ask"] = final_contract.get("ask", 0.0)
+                    volume = final_contract.get("volume", 0) or 0
+                    open_interest = final_contract.get("open_interest", 0) or 0
+                    greeks = final_contract.get("greeks", {})
                     
                     if greeks:
                         result["delta"] = abs(greeks.get("delta", 0.0))
@@ -152,19 +223,17 @@ class OptionsPricer:
                     if midpoint > 0:
                         result["premium_ratio"] = result["delta"] / midpoint
                     
-                    # Evaluation Logic
-                    # A good contract usually provides at least 0.15 to 0.20 delta per $1 of premium for short-term trades
-                    # If IV is > 1.0 (100%), it's highly susceptible to IV crush unless it's a very volatile stock (like TSLA/NVDA, which can handle 1.5).
-                    
-                    if result["iv"] > 1.20:
-                        result["verdict"] = "OVERPRICED - HIGH IV"
-                        result["reason"] = f"IV is bloated at {result['iv']*100:.1f}%. High risk of IV Crush."
-                    elif result["premium_ratio"] < 0.10 and midpoint > 1.0:
-                        result["verdict"] = "POOR VALUE"
-                        result["reason"] = f"Paying ${midpoint:.2f} for only {result['delta']:.2f} Delta."
-                    else:
-                        result["verdict"] = "FAIR VALUE"
-                        result["reason"] = "Pricing and Greeks are within normal bounds."
+                    # Evaluation Logic for contracts that passed the hard gates
+                    if result["verdict"] == "UNKNOWN": # i.e. it wasn't flagged as UNTRADEABLE AT SIZE
+                        if result["iv"] > 1.20:
+                            result["verdict"] = "OVERPRICED - HIGH IV"
+                            result["reason"] = f"IV is bloated at {result['iv']*100:.1f}%. High risk of IV Crush."
+                        elif result["premium_ratio"] < 0.10 and midpoint > 1.0:
+                            result["verdict"] = "POOR VALUE"
+                            result["reason"] = f"Paying ${midpoint:.2f} for only {result['delta']:.2f} Delta."
+                        else:
+                            result["verdict"] = "FAIR VALUE"
+                            result["reason"] = "Pricing, liquidity, and breakeven are optimal."
                         
                     return result
                         

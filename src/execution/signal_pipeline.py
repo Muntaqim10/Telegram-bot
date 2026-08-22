@@ -24,14 +24,15 @@ class SignalPipeline:
         else:
             log.info(f"🔴 {ticker} Short breakdown setup evaluated with risk management.")
 
-        # 1.5 VWAP Overextension Guard (+/- 2.5% from VWAP)
+        # 1.5 VWAP Overextension Check (soft-fail: tag, don't suppress)
         vwap_ratio = signal.get("vwap_ratio", 1.0)
+        vwap_warning = None
         if direction == "Long" and vwap_ratio > 1.025:
-            log.info(f"🚫 BLOCKING {ticker} Call: Price is overextended ({vwap_ratio:.4f} > +2.5% above VWAP). High pullback risk.")
-            return
+            vwap_warning = f"⚠️ Extended — chasing risk (+{(vwap_ratio - 1)*100:.1f}% above VWAP)"
+            log.info(f"⚠️ {ticker} Call: Price overextended ({vwap_ratio:.4f}). Tagging alert, not blocking.")
         elif direction == "Short" and vwap_ratio < 0.975:
-            log.info(f"🚫 BLOCKING {ticker} Put: Price is overextended ({vwap_ratio:.4f} < -2.5% below VWAP). High bounce risk.")
-            return
+            vwap_warning = f"⚠️ Extended — chasing risk ({(vwap_ratio - 1)*100:.1f}% below VWAP)"
+            log.info(f"⚠️ {ticker} Put: Price overextended ({vwap_ratio:.4f}). Tagging alert, not blocking.")
 
         # 2. AI Sentiment Check (Blind)
         headlines = await self.news_fetcher.get_headlines(ticker)
@@ -44,7 +45,7 @@ class SignalPipeline:
             log.info(f"🚫 BLOCKING {ticker} Long: Strong negative news ({sent_score:.2f}) contradicts long setup.")
             return
 
-        # 3. XGBoost Sentinel Check (Fakeout Filter)
+        # 3. XGBoost Sentinel Check → Conviction Tier (never a silent kill)
         features = {
             "entry_time_minute": signal["timestamp"].hour * 60 + signal["timestamp"].minute,
             "entry_volume": signal.get("volume", 100000),
@@ -57,18 +58,22 @@ class SignalPipeline:
             "lod_ratio": signal.get("lod_ratio", 1.0)
         }
         xgb_result = self.xgb_model.validate_setup(features)
-        
-        log.info(f"[{ticker}] AI Filters: Sentiment={sent_score:.2f}, XGB={xgb_result['verdict']} ({xgb_result['win_prob']:.2f})")
+        win_prob = xgb_result['win_prob']
+        verdict = xgb_result['verdict']
 
-        # STRICT ENFORCEMENT: Fakeout Filter
-        if xgb_result['verdict'] != "CONCORDANT" or xgb_result['win_prob'] < 0.75:
-            log.info(f"❌ {ticker} Rejected by Fakeout Filter. Prob: {xgb_result['win_prob']}, Verdict: {xgb_result['verdict']}")
-            return
+        # Conviction tiers based on model output
+        if verdict == "CONCORDANT" and win_prob >= 0.75:
+            conviction = "🟢 HIGH"
+        elif verdict == "CONCORDANT" and win_prob >= 0.55:
+            conviction = "🟡 MEDIUM"
+        else:
+            conviction = "🔴 LOW"
 
-        log.info(f"✅ {ticker} {direction} Passed AI Filters! Dispatching Alert.")
+        log.info(f"[{ticker}] AI Filters: Sentiment={sent_score:.2f}, XGB={verdict} ({win_prob:.2f}), Conviction={conviction}")
+        log.info(f"✅ {ticker} {direction} Conviction: {conviction}. Dispatching Alert.")
 
-        # Register in Risk Manager
-        self.risk_manager.add_position(ticker, signal["entry_price"], initial_atr=1.5, direction=signal["direction"])
+        # Register in Risk Manager and get computed SL/TP
+        risk_levels = self.risk_manager.add_position(ticker, signal["entry_price"], initial_atr=1.5, direction=signal["direction"])
 
         # 4. Options Pricing Check (Targeting ~30 days out expiration for short-term breakouts)
         now = datetime.now()
@@ -84,17 +89,16 @@ class SignalPipeline:
             target_strike = float(round(signal["entry_price"] * 0.975)) # 2.5% OTM for balanced cost/leverage
 
         opt_type = "call" if signal["direction"].upper() == "LONG" else "put"
-        pricing_data = await self.options_pricer.evaluate_contract(
+        pricing_data = await self.options_pricer.find_optimal_contract(
             ticker=ticker,
             expiration=expiration,
-            strike=target_strike,
-            option_type=opt_type
+            target_strike=target_strike,
+            option_type=opt_type,
+            take_profit=risk_levels["take_profit"]
         )
-
-        gex_strike = pricing_data.get("gex_target_strike")
-        if gex_strike and gex_strike != target_strike:
-            log.info(f"[{ticker}] GEX Target Strike Identified: ${gex_strike:.2f}")
-            target_strike = gex_strike
+        
+        # Pull the actual chosen strike, which might differ from target_strike due to affordability/liquidity gates
+        actual_strike = pricing_data.get("target_strike", target_strike)
 
         if direction == "Long" and pricing_data.get("flow_bias") == "BEARISH PUT FLOW" and pricing_data.get("put_dollar_flow", 0) > pricing_data.get("call_dollar_flow", 0) * 2.5:
             log.warning(f"[{ticker}] Long alert suppressed: Heavy Bearish Put Flow.")
@@ -103,9 +107,25 @@ class SignalPipeline:
             log.warning(f"[{ticker}] Short alert suppressed: Heavy Bullish Call Flow.")
             return
 
-        if pricing_data["verdict"] in ["POOR VALUE", "OVERPRICED - HIGH IV"]:
-            log.warning(f"[{ticker}] Alert suppressed by Options Pricer: {pricing_data['reason']}")
+        # Verdict handling
+        strategy_suggestion = None
+        iv_value = pricing_data.get("iv", 0.0)
+        verdict = pricing_data.get("verdict", "")
+        
+        if verdict == "POOR VALUE":
+            log.warning(f"[{ticker}] Alert suppressed: {pricing_data['reason']}")
             return
+        elif verdict == "UNTRADEABLE AT SIZE":
+            strategy_suggestion = f"⚠️ Setup valid, not tradeable at your size. {pricing_data['reason']}"
+            log.info(f"[{ticker}] Untradeable at size. Tagging alert, not blocking.")
+        elif verdict == "OVERPRICED - HIGH IV" or iv_value > 1.20:
+            iv_pct = iv_value * 100
+            strategy_suggestion = (
+                f"💡 IV is rich ({iv_pct:.0f}%) — premium pricing in continued movement. "
+                f"Consider a debit spread (buy ${actual_strike} / sell ${actual_strike + 5 if opt_type == 'call' else actual_strike - 5}) "
+                f"to cap vega risk instead of a naked long."
+            )
+            log.info(f"[{ticker}] High IV ({iv_pct:.0f}%). Tagging with spread suggestion, not blocking.")
 
         # 5. Build TradeSignal Object
         trade_signal = TradeSignal(
@@ -114,18 +134,19 @@ class SignalPipeline:
             signal_direction=signal["direction"],
             strategy_type=signal["catalyst_type"],
             timestamp=signal["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if hasattr(signal["timestamp"], "strftime") else str(signal["timestamp"]),
-            z_vol=3.5,
             is_whale=is_whale or pricing_data.get("is_whale", False),
-            rev_growth=30.0,
             win_probability=xgb_result['win_prob'],
             xgb_win_prob=xgb_result['win_prob'],
-            sentinel_verdict=xgb_result['verdict'],
-            context_score="Strong Intraday ORB",
+            sentinel_verdict=verdict,
+            conviction=conviction,
+            context_score=signal.get("tf_confluence", "Intraday ORB"),
             catalyst=catalyst,
-            historical_win_rate=80.0,
-            rsi=60.0,
-            stop_loss=0.0,
-            take_profit=0.0,
+            vwap_ratio=signal.get("vwap_ratio", 1.0),
+            volume=signal.get("volume", 0.0),
+            warning_tag=vwap_warning,
+            strategy_suggestion=strategy_suggestion,
+            stop_loss=risk_levels["stop_loss"],
+            take_profit=risk_levels["take_profit"],
             option_ask=pricing_data.get("ask", 0.0),
             option_bid=pricing_data.get("bid", 0.0),
             option_tp_pct=0.50,
@@ -139,8 +160,8 @@ class SignalPipeline:
             net_gex=pricing_data.get("net_gex", 0.0),
             expiry=expiration,
             intraday_expiry=expiration,
-            target_strike=target_strike,
-            intraday_strike=target_strike,
+            target_strike=actual_strike,
+            intraday_strike=actual_strike,
             option_type=opt_type.upper(),
             intraday_option_type=opt_type.upper(),
             pricing_verdict=pricing_data.get("verdict", ""),

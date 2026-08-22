@@ -152,6 +152,7 @@ class ORBStrategy:
                 "crb_low": state.get("crb_low", price),
                 "hod_ratio": hod_ratio,
                 "lod_ratio": lod_ratio,
+                "volume": volume,
                 "tf_confluence": "1m+5m+CRB+Daily"
             }
 

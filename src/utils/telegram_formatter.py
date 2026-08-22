@@ -41,6 +41,7 @@ def format_telegram_alert(signal: TradeSignal) -> str:
     
     ticker_code = f"<code>{signal.ticker}</code>"
     
+    # Options target line (only if we have real data)
     options_lines = ""
     timeframe = signal.timeframe_target.upper()
     if timeframe == "SWING" and signal.target_strike:
@@ -61,29 +62,31 @@ def format_telegram_alert(signal: TradeSignal) -> str:
             options_lines += f"{verdict_color} <b>Pricing:</b> {signal.pricing_verdict or 'UNKNOWN'} - <i>{signal.pricing_reason}</i>\n"
         else:
             options_lines += "⚠️ <b>Warning:</b> Short-term weekly option. Exit if target not hit within 60 mins.\n"
-    else:
-        options_lines = "⚠️ <b>Target:</b> <i>No options matching liquidity</i>\n"
-        
+    
     whale_line = "🐳 <b>Whale Flow:</b> <code>$100k+ Detected</code>\n" if signal.is_whale else ""
-    quality_line = f"🏛️ <b>Growth:</b> <code>YoY {signal.rev_growth:.1f}%</code>\n" if signal.rev_growth > 25.0 else ""
+    
+    # VWAP distance (real computed value)
+    vwap_pct = (signal.vwap_ratio - 1.0) * 100
+    vwap_label = f"+{vwap_pct:.2f}% above" if vwap_pct >= 0 else f"{vwap_pct:.2f}% below"
+    
+    warning_line = f"{signal.warning_tag}\n" if signal.warning_tag else ""
     
     flow_line = f"💵 <b>Options Flow:</b> <code>{signal.flow_bias}</code> (${signal.call_dollar_flow:,.0f} Calls / ${signal.put_dollar_flow:,.0f} Puts)\n"
     
     msg = (
         f"{strategy_header}\n"
         f"Asset: {ticker_code} ({action_label})\n"
-        f"✅ <b>STATUS:</b> CONFIRMED\n\n"
+        f"✅ <b>STATUS:</b> CONFIRMED\n"
+        f"{warning_line}\n"
         f"{options_lines}"
-        f"🧠 <b>Edge:</b> <i>{signal.context_score}</i>\n"
-        f"📊 <b>History:</b> <code>{signal.historical_win_rate}% WR</code> | <code>{int(signal.win_probability * 100)}% Win Prob</code>\n\n"
+        f"🧠 <b>Confluence:</b> <i>{signal.context_score}</i>\n"
+        f"📊 <b>Conviction:</b> {signal.conviction} (<code>{int(signal.win_probability * 100)}%</code>)\n\n"
         f"📈 <b>Market Context:</b>\n"
         f"• Price: <code>${signal.price:.2f}</code>\n"
-        f"• Volatility: <code>{signal.z_vol:.1f}σ</code>\n"
-        f"• RSI: <code>{signal.rsi:.1f}</code>\n"
+        f"• VWAP: <code>{vwap_label}</code>\n"
         f"• Catalyst: <i>{signal.catalyst}</i>\n"
         f"{flow_line}"
-        f"{whale_line}"
-        f"{quality_line}\n"
+        f"{whale_line}\n"
         f"🛡️ <b>EXIT MATRIX (One-Tap Copy):</b>\n"
         f"• Stock TP: <code>${signal.take_profit:.2f}</code> | SL: <code>${signal.stop_loss:.2f}</code>\n"
     )
@@ -98,5 +101,8 @@ def format_telegram_alert(signal: TradeSignal) -> str:
             f"| SL: <code>${opt_sl:.2f}</code> ({int(signal.option_sl_pct*100)}%)\n"
             f"  <i>Bid/Ask: ${signal.option_bid or 0.0:.2f} / ${signal.option_ask:.2f} | Est. Cost: ${int(midpoint*100)}/contract</i>"
         )
+    
+    if signal.strategy_suggestion:
+        msg += f"\n\n{signal.strategy_suggestion}"
         
     return msg

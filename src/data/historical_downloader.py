@@ -19,11 +19,14 @@ log = logging.getLogger("historical_downloader")
 
 TRADIER_TOKEN = os.getenv("TRADIER_ACCESS_TOKEN")
 
-# Major Indexes & Mag 7 Stocks for institutional backtesting & ML training
+# Major Indexes & Mag 7 Stocks
 MAG7_AND_INDEXES = [
     "SPY", "QQQ", "IWM", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AMD"
 ]
-VOLATILE_TICKERS = MAG7_AND_INDEXES
+
+# Use the actual universe the bot trades for ML training
+from src.data.dynamic_scanner import CANDIDATE_POOL
+VOLATILE_TICKERS = CANDIDATE_POOL
 
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/intraday/"))
 os.makedirs(DATA_DIR, exist_ok=True)

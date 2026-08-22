@@ -62,10 +62,26 @@ class XGBMicroSentinel:
             X = df[available_features]
             y = df["target"]
             
-            # Methodology 3: Out-of-Sample Train/Validation Split (80% Train, 20% Out-of-Sample Validation)
-            split_idx = int(len(df) * 0.8)
-            X_train, X_val = X.iloc[:split_idx], X.iloc[split_idx:]
-            y_train, y_val = y.iloc[:split_idx], y.iloc[split_idx:]
+            # Methodology 3: Date-Grouped Out-of-Sample Train/Validation Split
+            # Prevents data leakage by ensuring the same date never appears in both train and val sets.
+            if "date" in df.columns:
+                unique_dates = sorted(df["date"].unique())
+                split_idx = int(len(unique_dates) * 0.8)
+                train_dates = unique_dates[:split_idx]
+                val_dates = unique_dates[split_idx:]
+                
+                train_df = df[df["date"].isin(train_dates)]
+                val_df = df[df["date"].isin(val_dates)]
+                
+                X_train = train_df[available_features]
+                y_train = train_df["target"]
+                X_val = val_df[available_features]
+                y_val = val_df["target"]
+            else:
+                # Fallback if date is somehow missing
+                split_idx = int(len(df) * 0.8)
+                X_train, X_val = X.iloc[:split_idx], X.iloc[split_idx:]
+                y_train, y_val = y.iloc[:split_idx], y.iloc[split_idx:]
 
             dtrain = self.xgb.DMatrix(X_train, label=y_train)
             dval = self.xgb.DMatrix(X_val, label=y_val)

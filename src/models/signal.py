@@ -10,18 +10,19 @@ class TradeSignal:
     timestamp: Optional[str] = None
     
     # AI / Sentinel Data
-    z_vol: float = 0.0
     is_whale: bool = False
-    rev_growth: float = 0.0
     win_probability: float = 0.0
     xgb_win_prob: float = 0.0
     sentinel_verdict: str = "UNKNOWN"
+    conviction: str = "🔴 LOW"  # Tiered: 🟢 HIGH / 🟡 MEDIUM / 🔴 LOW
     context_score: str = ""
     catalyst: str = ""
     
-    # Technicals
-    historical_win_rate: float = 0.0
-    rsi: float = 0.0
+    # Real Technicals (computed from live data)
+    vwap_ratio: float = 1.0
+    volume: float = 0.0
+    warning_tag: Optional[str] = None  # Soft-fail warnings (e.g. VWAP overextension)
+    strategy_suggestion: Optional[str] = None  # Alt strategy hint (e.g. debit spread when IV is rich)
     
     # Exits
     stop_loss: float = 0.0
