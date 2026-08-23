@@ -27,12 +27,13 @@ class SignalPipeline:
 
         # 1.5 VWAP Overextension Check (soft-fail: tag, don't suppress)
         vwap_ratio = signal.get("vwap_ratio", 1.0)
-        vwap_warning = None
+        warnings = []
+        
         if direction == "Long" and vwap_ratio > 1.025:
-            vwap_warning = f"⚠️ Extended — chasing risk (+{(vwap_ratio - 1)*100:.1f}% above VWAP)"
+            warnings.append(f"Extended (+{(vwap_ratio - 1)*100:.1f}% > VWAP)")
             log.info(f"⚠️ {ticker} Call: Price overextended ({vwap_ratio:.4f}). Tagging alert, not blocking.")
         elif direction == "Short" and vwap_ratio < 0.975:
-            vwap_warning = f"⚠️ Extended — chasing risk ({(vwap_ratio - 1)*100:.1f}% below VWAP)"
+            warnings.append(f"Extended ({(vwap_ratio - 1)*100:.1f}% < VWAP)")
             log.info(f"⚠️ {ticker} Put: Price overextended ({vwap_ratio:.4f}). Tagging alert, not blocking.")
 
         # 2. AI Sentiment Check (Blind)
@@ -40,11 +41,13 @@ class SignalPipeline:
         sent_score, catalyst, is_whale, sent_conf = await self.sentiment_analyzer.score_headlines(ticker, headlines)
 
         if direction == "Short" and sent_score > 0.65:
-            log.info(f"🚫 BLOCKING {ticker} Short: Strong positive news ({sent_score:.2f}) contradicts short setup.")
-            return
+            warnings.append(f"Fighting positive news ({sent_score:.2f} score)")
+            log.info(f"⚠️ {ticker} Short: Strong positive news ({sent_score:.2f}). Tagging alert, not blocking.")
         elif direction == "Long" and sent_score < 0.35:
-            log.info(f"🚫 BLOCKING {ticker} Long: Strong negative news ({sent_score:.2f}) contradicts long setup.")
-            return
+            warnings.append(f"Fighting negative news ({sent_score:.2f} score)")
+            log.info(f"⚠️ {ticker} Long: Strong negative news ({sent_score:.2f}). Tagging alert, not blocking.")
+            
+        final_warning_tag = "⚠️ " + " | ".join(warnings) if warnings else None
 
         # 3. XGBoost Sentinel Check → Conviction Tier (never a silent kill)
         features = {
@@ -163,7 +166,7 @@ class SignalPipeline:
             catalyst=catalyst,
             vwap_ratio=signal.get("vwap_ratio", 1.0),
             volume=signal.get("volume", 0.0),
-            warning_tag=vwap_warning,
+            warning_tag=final_warning_tag,
             strategy_suggestion=strategy_suggestion,
             stop_loss=risk_levels["stop_loss"],
             take_profit=risk_levels["take_profit"],
