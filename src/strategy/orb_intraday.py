@@ -15,7 +15,7 @@ class ORBStrategy:
     """
     def __init__(self, orb_minutes: int = 15):
         self.orb_minutes = orb_minutes
-        self.quiet_seconds = int(os.getenv("QUIET_MODE_SECONDS", "900"))
+        self.quiet_seconds = int(os.getenv("ORB_COOLDOWN_SECONDS", "900"))
         self.opening_ranges = {} # Dict[ticker, Dict[str, float]]
         self.active_signals = {}
         self.intraday_state = {} # Dict[ticker, dict]
@@ -51,15 +51,17 @@ class ORBStrategy:
             return None
         
         # Maintain overall state structure (4-Timeframe Confluence Engine)
-        state = self.intraday_state.setdefault(ticker, {
-            "cum_pv": 0.0, "cum_vol": 0.0, "vwap": price,
-            "ema9": price, "ema21": price, 
-            "ema9_5m": price, "ema21_5m": price, "last_5m_bar": timestamp.minute // 5,
-            "last_minute": timestamp.minute,
-            "last_price": price,
-            "pm_high": price, "pm_low": price, "pm_vol": 0,
-            "post_high": price, "post_low": price
-        })
+        state = self.intraday_state.setdefault(ticker, {})
+        if "cum_vol" not in state:
+            state.update({
+                "cum_pv": 0.0, "cum_vol": 0.0, "vwap": price,
+                "ema9": price, "ema21": price, 
+                "ema9_5m": price, "ema21_5m": price, "last_5m_bar": timestamp.minute // 5,
+                "last_minute": timestamp.minute,
+                "last_price": price,
+                "pm_high": price, "pm_low": price, "pm_vol": 0,
+                "post_high": price, "post_low": price
+            })
         state["last_price"] = price
         
         # 1. Pre-Market Tick Handling (4:00 AM - 9:30 AM EST) [Timeframe 4: Premarket / Daily Level]
@@ -105,8 +107,9 @@ class ORBStrategy:
 
         # Track Closing Range (3:45 PM - 4:00 PM EST Previous Day & Afternoon Session)
         is_closing_range_window = (timestamp.hour == 15) and (timestamp.minute >= 45)
-        state["crb_high"] = max(state.get("crb_high", price), price)
-        state["crb_low"] = min(state.get("crb_low", price), price)
+        if is_closing_range_window:
+            state["todays_crb_high"] = max(state.get("todays_crb_high", price), price)
+            state["todays_crb_low"] = min(state.get("todays_crb_low", price), price)
 
         # Common indicator export across timeframes
         vwap_ratio = price / state["vwap"] if state["vwap"] > 0 else 1.0
@@ -236,7 +239,19 @@ class ORBStrategy:
         
     def reset_daily(self):
         """Clears the intraday memory for the next trading day."""
+        carried_crb = {}
+        for ticker, state in self.intraday_state.items():
+            if "todays_crb_high" in state and "todays_crb_low" in state:
+                carried_crb[ticker] = {
+                    "crb_high": state["todays_crb_high"],
+                    "crb_low": state["todays_crb_low"]
+                }
+                
         self.opening_ranges.clear()
         self.active_signals.clear()
         self.intraday_state.clear()
+        
+        for ticker, crb_data in carried_crb.items():
+            self.intraday_state[ticker] = crb_data
+            
         log.debug("ORB & VWAP strategy reset for the new day.")

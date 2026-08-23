@@ -42,7 +42,7 @@ class RiskManager:
         low_close = np.abs(df['low'] - df['close'].shift())
         
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        true_range = np.max(ranges, axis=1)
+        true_range = ranges.max(axis=1)
         
         atr = true_range.rolling(period).mean().iloc[-1]
         return atr
@@ -68,7 +68,8 @@ class RiskManager:
                 return {"status": "TP_HIT", "exit_price": current_price, "pnl": profit_pct}
 
             # If price moves up, raise the stop
-            if atr_distance > 0:
+            current_profit_pct = (current_price - entry_price) / entry_price
+            if atr_distance > 0 and current_profit_pct >= self.min_profit_pct:
                 new_stop = current_price - atr_distance
                 if new_stop > current_stop:
                     pos["trailing_stop"] = new_stop
@@ -85,7 +86,8 @@ class RiskManager:
                 return {"status": "TP_HIT", "exit_price": current_price, "pnl": profit_pct}
 
             # If price moves down, lower the stop
-            if atr_distance > 0:
+            current_profit_pct = (entry_price - current_price) / entry_price
+            if atr_distance > 0 and current_profit_pct >= self.min_profit_pct:
                 new_stop = current_price + atr_distance
                 if new_stop < current_stop or current_stop == 0:
                     pos["trailing_stop"] = new_stop
@@ -112,6 +114,7 @@ class RiskManager:
         from datetime import datetime
         
         file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/trade_outcomes.csv"))
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
         file_exists = os.path.exists(file_path)
         
         try:
@@ -138,7 +141,7 @@ class RiskManager:
             loop = asyncio.get_running_loop()
             loop.create_task(db_close_trade(ticker, exit_price, outcome_status))
         except RuntimeError:
-            pass # Not running in an async event loop
+            log.warning(f"[{ticker}] Not running in an async event loop, database archive skipped.")
         except Exception as e:
             log.warning(f"Failed to schedule database archive for {ticker}: {e}")
 
@@ -147,17 +150,18 @@ class RiskManager:
         Registers a new intraday runner position.
         Returns the computed (or provided) stop_loss and take_profit levels.
         """
-        if stop_loss is not None and take_profit is not None:
+        atr_distance = initial_atr * self.atr_multiplier
+        
+        if stop_loss is not None:
             initial_stop = stop_loss
+        else:
+            initial_stop = entry_price - atr_distance if direction == "Long" else entry_price + atr_distance
+            
+        if take_profit is not None:
             tp = take_profit
         else:
-            atr_distance = initial_atr * self.atr_multiplier
             from src.utils.math_utils import calculate_take_profit
             tp = calculate_take_profit(entry_price, initial_atr, direction)
-            if direction == "Long":
-                initial_stop = entry_price - atr_distance
-            else:
-                initial_stop = entry_price + atr_distance
         
         self.active_positions[ticker] = {
             "entry_price": entry_price,

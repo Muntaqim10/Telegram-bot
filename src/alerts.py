@@ -138,7 +138,7 @@ class AlertGateway:
     async def dispatch_high_conviction(self, signal: Any, force_send: bool = False, suppress_telegram: bool = False) -> bool:
         """Dispatches an institutional-grade signal and journals to SQLite."""
         # 1. Senior Deduplication
-        quiet_seconds = int(os.getenv("QUIET_MODE_SECONDS", "3600"))
+        quiet_seconds = int(os.getenv("ALERT_DEDUP_SECONDS", "3600"))
         dedup_key = f"alert_dedup:{signal.ticker}:{signal.signal_direction}"
         if not force_send:
             if self._redis:
