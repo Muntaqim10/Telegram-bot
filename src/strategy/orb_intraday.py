@@ -19,6 +19,7 @@ class ORBStrategy:
         self.opening_ranges = {} # Dict[ticker, Dict[str, float]]
         self.active_signals = {}
         self.intraday_state = {} # Dict[ticker, dict]
+        self.vol_surge_multiplier = float(os.getenv("ORB_VOL_SURGE_MULTIPLIER", "1.5"))
         
     def _get_market_session(self, timestamp: pd.Timestamp) -> str:
         """Determines market session: PREMARKET, RTH (Regular Trading Hours), or POSTMARKET."""
@@ -114,13 +115,15 @@ class ORBStrategy:
         is_in_orb_window = (timestamp.hour == 9) and (timestamp.minute < (30 + self.orb_minutes))
         
         if ticker not in self.opening_ranges:
-            self.opening_ranges[ticker] = {"high": price, "low": price, "orb_established": False}
+            self.opening_ranges[ticker] = {"high": price, "low": price, "orb_established": False, "orb_vol_sum": 0.0, "orb_tick_count": 0}
             
         orb = self.opening_ranges[ticker]
         
         if is_in_orb_window:
             if price > orb["high"]: orb["high"] = price
             if price < orb["low"]: orb["low"] = price
+            orb["orb_vol_sum"] += volume
+            orb["orb_tick_count"] += 1
             return None
             
         else:
@@ -135,6 +138,10 @@ class ORBStrategy:
                 last_time = last_sig_info.get("time")
                 if last_time and (timestamp - last_time).total_seconds() < self.quiet_seconds:
                     return None # Per-ticker quiet period cool-off window
+
+            # Volume Surge Confirmation: require current tick volume >= 1.5x the average ORB-window volume
+            avg_orb_vol = (orb["orb_vol_sum"] / orb["orb_tick_count"]) if orb.get("orb_tick_count", 0) > 0 else 0.0
+            has_volume_surge = volume >= (avg_orb_vol * self.vol_surge_multiplier) if avg_orb_vol > 0 else True
                 
             signal_data = {
                 "ticker": ticker,
@@ -161,7 +168,7 @@ class ORBStrategy:
             is_overextended_downside = vwap_ratio < 0.975
 
             # 1. Call Setups: Dual ORB + CRB Breakouts & Breakdown Fakeout Reversals
-            if not is_overextended_upside:
+            if not is_overextended_upside and has_volume_surge:
                 # Highest Conviction: Dual ORB + CRB Breakout (Price > ORB High AND Price > CRB High)
                 if price > orb["high"] and price >= state.get("crb_high", price) and price >= state["vwap"] and ema_trend_5m_bullish == 1:
                     self.active_signals[ticker] = {"direction": "Long", "time": timestamp}
@@ -190,7 +197,7 @@ class ORBStrategy:
                     return signal_data
 
             # 2. Put Setups: Dual ORB + CRB Breakdowns & Breakout Fakeout Reversals
-            if not is_overextended_downside:
+            if not is_overextended_downside and has_volume_surge:
                 # Highest Conviction: Dual ORB + CRB Breakdown (Price < ORB Low AND Price < CRB Low)
                 if price < orb["low"] and price <= state.get("crb_low", price) and price <= state["vwap"] and ema_trend_5m_bullish == 0:
                     self.active_signals[ticker] = {"direction": "Short", "time": timestamp}

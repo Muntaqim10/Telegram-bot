@@ -35,6 +35,23 @@ class IntradayBacktester:
         log.info("Loading historical intraday data...")
         historical_data = self.load_historical_data(data_dir)
         
+        # Pre-populate the ATR cache from historical data so labels use real per-ticker volatility.
+        # Without this, every label falls back to the fake ATR=1.5 constant.
+        import numpy as np
+        for ticker, df in historical_data.items():
+            daily_bars = df.resample("D").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
+            if len(daily_bars) >= 15:
+                high_low = daily_bars["high"] - daily_bars["low"]
+                high_close = (daily_bars["high"] - daily_bars["close"].shift()).abs()
+                low_close = (daily_bars["low"] - daily_bars["close"].shift()).abs()
+                tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+                atr_14 = tr.rolling(14).mean().iloc[-1]
+                if not pd.isna(atr_14) and atr_14 > 0:
+                    self.engine.donchian_strategy.atr_cache[ticker] = atr_14
+                    log.info(f"[BACKTEST ATR] {ticker}: ATR_14 = {atr_14:.4f}")
+        
+        log.info(f"Pre-populated ATR cache for {len(self.engine.donchian_strategy.atr_cache)} tickers.")
+        
         for ticker, df in historical_data.items():
             log.info(f"Backtesting {ticker}...")
             

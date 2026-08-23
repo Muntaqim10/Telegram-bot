@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import aiohttp
 import redis.asyncio as aioredis
 from datetime import datetime
 from dotenv import load_dotenv
@@ -43,6 +44,23 @@ from src.data.dynamic_scanner import DynamicTickerScanner, CANDIDATE_POOL
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 TRADIER_TOKEN = os.getenv("TRADIER_ACCESS_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+def validate_environment():
+    """Ensure critical environment variables are present before booting."""
+    missing = []
+    if not TRADIER_TOKEN: missing.append("TRADIER_ACCESS_TOKEN")
+    if not GROQ_API_KEY: missing.append("GROQ_API_KEY")
+    if not TELEGRAM_BOT_TOKEN: missing.append("TELEGRAM_BOT_TOKEN")
+    if not TELEGRAM_CHAT_ID: missing.append("TELEGRAM_CHAT_ID")
+    
+    if missing:
+        log.error(f"CRITICAL BOOT FAILURE: Missing required environment variables: {', '.join(missing)}")
+        sys.exit(1)
+
+# Run validation immediately
+validate_environment()
 
 class IntradayEngine:
     def __init__(self, redis_client):
@@ -59,6 +77,7 @@ class IntradayEngine:
         self.xgb_model = XGBMicroSentinel()
         self.risk_manager = RiskManager()
         self.alerts = AlertGateway(redis_client)
+        self._shared_http_session = None  # Lazy-initialized shared aiohttp session
         
         from src.execution.options_pricer import OptionsPricer
         from src.data.news_fetcher import NewsFetcher
@@ -74,6 +93,19 @@ class IntradayEngine:
             self.alerts,
             self.donchian_strategy
         )
+        self._last_reset_date = None  # Track the last date we reset ORB state
+
+    async def get_shared_session(self) -> aiohttp.ClientSession:
+        """Lazily create and return a shared aiohttp session for all HTTP calls."""
+        if self._shared_http_session is None or self._shared_http_session.closed:
+            self._shared_http_session = aiohttp.ClientSession()
+        return self._shared_http_session
+
+    async def close(self):
+        """Clean up shared resources."""
+        if self._shared_http_session and not self._shared_http_session.closed:
+            await self._shared_http_session.close()
+        await self.alerts.close()
 
     async def run_dynamic_scanner_loop(self):
         """Periodically scans the broad market for high-volume surge & momentum leaders."""
@@ -114,6 +146,22 @@ class IntradayEngine:
             except Exception as e:
                 log.error(f"Extended scanner loop error: {e}")
             await asyncio.sleep(60)
+
+    async def run_daily_reset_loop(self):
+        """Resets ORB intraday state at 9:29 AM ET each trading day to prevent stale VWAP/EMA carry-over."""
+        log.info("🔄 [DAILY RESET] Starting daily reset scheduler...")
+        while True:
+            try:
+                now = pd.Timestamp.now(tz="US/Eastern")
+                today = now.date()
+                # Reset once per day, at or after 9:29 AM, before the ORB window opens
+                if now.hour == 9 and now.minute >= 29 and self._last_reset_date != today:
+                    self.orb_strategy.reset_daily()
+                    self._last_reset_date = today
+                    log.info(f"🔄 [DAILY RESET] ORB strategy state cleared for {today}. Fresh VWAP/EMA/ORB will build from 9:30.")
+            except Exception as e:
+                log.error(f"Daily reset loop error: {e}")
+            await asyncio.sleep(30)  # Check every 30 seconds
             
     async def process_events(self):
         """Main event loop handling ticks from WebSockets."""
@@ -163,19 +211,20 @@ class IntradayEngine:
                             )
 
                     # 1. Process Tick in Strategy
+                    now = pd.Timestamp.now(tz="US/Eastern")  # Cache once per tick
                     signal = self.orb_strategy.process_tick(
                         ticker=ticker, 
                         price=price, 
                         volume=size, 
-                        timestamp=pd.Timestamp.now(tz="US/Eastern")
+                        timestamp=now
                     )
                     
                     # 1.5 Process for extended hours movers
-                    self.extended_scanner.process_event(event, pd.Timestamp.now(tz="US/Eastern"))
+                    self.extended_scanner.process_event(event, now)
                     
                     # 2. Priority check for gap movers on open
                     if not signal:
-                        signal = self.extended_scanner.consume_priority_signal(ticker, pd.Timestamp.now(tz="US/Eastern"))
+                        signal = self.extended_scanner.consume_priority_signal(ticker, now)
                         if signal:
                             log.info(f"🚨 STRATEGY TRIGGER: Priority Open Eval for Extended Hours Mover {ticker}")
                     
@@ -223,6 +272,7 @@ async def lifespan(app: FastAPI):
     app.state.extended_task = asyncio.create_task(app.state.engine.run_extended_hours_scanner_loop())
     app.state.scanner_task = asyncio.create_task(app.state.engine.run_dynamic_scanner_loop())
     app.state.donchian_task = asyncio.create_task(app.state.engine.run_donchian_scanner_loop())
+    app.state.daily_reset_task = asyncio.create_task(app.state.engine.run_daily_reset_loop())
     app.state.stream_task = asyncio.create_task(app.state.engine.market_stream.run())
     app.state.processor_task = asyncio.create_task(app.state.engine.process_events())
     app.state.listener_task = asyncio.create_task(app.state.engine.alerts.start_listener())
@@ -234,13 +284,23 @@ async def lifespan(app: FastAPI):
     app.state.extended_task.cancel()
     app.state.scanner_task.cancel()
     app.state.donchian_task.cancel()
+    app.state.daily_reset_task.cancel()
     app.state.stream_task.cancel()
     app.state.processor_task.cancel()
     app.state.listener_task.cancel()
-    await app.state.engine.alerts.close()
+    await app.state.engine.close()
     await app.state.redis.aclose()
 
 app = FastAPI(title="RallyHunter_v26 Intraday Engine", lifespan=lifespan)
+
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    return response
 
 @app.get("/")
 @app.get("/health")
@@ -250,8 +310,7 @@ async def health_check():
         "status": "online",
         "service": "RallyHunter Intraday Engine",
         "mode": "Dynamic Broad Market Discovery (No Watchlist)",
-        "tracked_tickers_count": len(active_symbols),
-        "tracked_tickers": active_symbols
+        "tracked_tickers_count": len(active_symbols)
     }
 
 if __name__ == "__main__":
