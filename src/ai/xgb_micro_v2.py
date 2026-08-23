@@ -26,6 +26,10 @@ class XGBMicroSentinelV2:
             self.model = None
             log.error("XGBoost library is not installed.")
             
+    @property
+    def is_active(self) -> bool:
+        return self._is_trained
+
     def _load_model(self):
         if self.xgb and os.path.exists(self.model_path):
             try:

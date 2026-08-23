@@ -2,7 +2,7 @@ import os
 import logging
 import asyncio
 import aiohttp
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from typing import List
 
 log = logging.getLogger(__name__)
@@ -14,17 +14,35 @@ class NewsFetcher:
     def __init__(self, finnhub_token: str = None, tiingo_token: str = None):
         self.finnhub_token = finnhub_token or os.getenv("FINNHUB_TOKEN")
         self.tiingo_token = tiingo_token or os.getenv("TIINGO_TOKEN")
+        self._cache = {}  # (ticker, date) -> {"headlines": List[str], "fetched_at": datetime}
+        self.cache_ttl = int(os.getenv("NEWS_CACHE_TTL_SECONDS", "300"))
 
     async def get_headlines(self, ticker: str, max_count: int = 10) -> List[str]:
         """
-        Retrieves recent headlines for a symbol.
+        Retrieves recent headlines for a symbol with in-memory caching.
         """
+        today = date.today()
+        cache_key = (ticker, today)
+        now = datetime.now()
+
+        # Check cache
+        if cache_key in self._cache:
+            cached = self._cache[cache_key]
+            age = (now - cached["fetched_at"]).total_seconds()
+            if age < self.cache_ttl:
+                log.debug(f"News cache hit for {ticker}. Age: {age:.1f}s")
+                return cached["headlines"][:max_count]
+
         headlines = []
         if self.finnhub_token:
             headlines = await self._fetch_finnhub(ticker, max_count)
             
         if not headlines and self.tiingo_token:
             headlines = await self._fetch_tiingo(ticker, max_count)
+
+        # Update cache
+        if headlines:
+            self._cache[cache_key] = {"headlines": headlines, "fetched_at": now}
 
         return headlines
 

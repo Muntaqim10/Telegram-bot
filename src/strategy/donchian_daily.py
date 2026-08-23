@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 import aiohttp
 import pandas as pd
 import numpy as np
@@ -29,10 +30,21 @@ class DonchianSwingStrategy:
             "Accept": "application/json"
         }
         self.atr_cache = {}
+        self._bar_cache = {}  # ticker -> {"df": DataFrame, "fetched_at": datetime}
+        self._warmup_logged = False
 
-    async def fetch_daily_bars(self, ticker: str, lookback_days: int = 80) -> pd.DataFrame:
+    async def fetch_daily_bars(self, session: aiohttp.ClientSession, ticker: str, lookback_days: int = 80) -> pd.DataFrame:
         """Fetch daily OHLCV bars from Tradier."""
-        end_date = datetime.now()
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("US/Eastern"))
+        
+        # 1. Check 6-hour cache
+        if ticker in self._bar_cache:
+            cached = self._bar_cache[ticker]
+            if (now - cached["fetched_at"]).total_seconds() < 6 * 3600:
+                return cached["df"]
+
+        end_date = now
         start_date = end_date - timedelta(days=lookback_days)
 
         url = "https://api.tradier.com/v1/markets/history"
@@ -44,28 +56,31 @@ class DonchianSwingStrategy:
         }
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=self.headers, params=params, timeout=10.0) as resp:
-                    if resp.status != 200:
-                        log.warning(f"Failed to fetch daily bars for {ticker}: {resp.status}")
-                        return pd.DataFrame()
+            async with session.get(url, headers=self.headers, params=params, timeout=10.0) as resp:
+                if resp.status != 200:
+                    log.warning(f"Failed to fetch daily bars for {ticker}: {resp.status}")
+                    return pd.DataFrame()
 
-                    data = await resp.json()
-                    history = data.get("history", {})
-                    if not history or "day" not in history:
-                        log.warning(f"No daily data for {ticker}")
-                        return pd.DataFrame()
+                data = await resp.json()
+                history = data.get("history", {})
+                if not history or "day" not in history:
+                    log.warning(f"No daily data for {ticker}")
+                    return pd.DataFrame()
 
-                    days = history["day"]
-                    if not isinstance(days, list):
-                        days = [days]
+                days = history["day"]
+                if not isinstance(days, list):
+                    days = [days]
 
-                    df = pd.DataFrame(days)
-                    df["date"] = pd.to_datetime(df["date"])
-                    df.set_index("date", inplace=True)
-                    for col in ["open", "high", "low", "close", "volume"]:
-                        df[col] = pd.to_numeric(df[col], errors="coerce")
-                    return df.dropna(subset=["close"])
+                df = pd.DataFrame(days)
+                df["date"] = pd.to_datetime(df["date"])
+                df.set_index("date", inplace=True)
+                for col in ["open", "high", "low", "close", "volume"]:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                
+                clean_df = df.dropna(subset=["close"])
+                if not clean_df.empty:
+                    self._bar_cache[ticker] = {"df": clean_df, "fetched_at": now}
+                return clean_df
 
         except Exception as e:
             log.error(f"Error fetching daily bars for {ticker}: {e}")
@@ -153,12 +168,12 @@ class DonchianSwingStrategy:
     @staticmethod
     def _build_signal(ticker, close, direction, catalyst_type, z_vol, rsi, chop, atr, row) -> Dict:
         """Build a signal dict compatible with the SignalPipeline."""
+        from src.utils.math_utils import calculate_take_profit
+        take_profit = calculate_take_profit(close, atr, direction)
         if direction == "Long":
             stop_loss = close - (1.5 * atr)
-            take_profit = close + (2.0 * atr)
         else:
             stop_loss = close + (1.5 * atr)
-            take_profit = close - (2.0 * atr)
 
         return {
             "ticker": ticker,
@@ -185,21 +200,54 @@ class DonchianSwingStrategy:
 
     async def scan_universe(self, tickers: List[str]) -> List[Dict]:
         """Scan all tickers for daily Donchian signals."""
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("US/Eastern"))
+        
+        is_weekend = now.weekday() >= 5
+        if is_weekend:
+            return []
+            
+        is_premarket = 8 <= now.hour and (now.hour < 9 or (now.hour == 9 and now.minute < 30))
+        is_postmarket = now.hour >= 16
+        
+        if not (is_premarket or is_postmarket):
+            # During RTH or middle of the night, skip full fetch-and-evaluate cycle
+            return []
+            
         all_signals = []
-        for ticker in tickers:
-            try:
-                df = await self.fetch_daily_bars(ticker)
-                if df.empty:
-                    continue
-                df = self.compute_indicators(df)
-                if df.empty:
-                    continue
-                self.atr_cache[ticker] = df["ATR_14"].iloc[-1]
-                signals = self.evaluate_signals(df, ticker)
-                if signals:
-                    for sig in signals:
-                        log.info(f"📅 SWING SIGNAL: {sig['catalyst_type']} on {ticker} at ${sig['entry_price']:.2f} (Z_vol={sig['z_vol']:.2f})")
-                    all_signals.extend(signals)
-            except Exception as e:
-                log.error(f"Error scanning {ticker} for daily signals: {e}")
+        sem = asyncio.Semaphore(5)
+        
+        async with aiohttp.ClientSession() as session:
+            async def process_ticker(ticker: str):
+                async with sem:
+                    try:
+                        df = await self.fetch_daily_bars(session, ticker)
+                        if df.empty:
+                            return []
+                        df = self.compute_indicators(df)
+                        if df.empty:
+                            return []
+                        self.atr_cache[ticker] = df["ATR_14"].iloc[-1]
+                        signals = self.evaluate_signals(df, ticker)
+                        if signals:
+                            for sig in signals:
+                                log.info(f"📅 SWING SIGNAL: {sig['catalyst_type']} on {ticker} at ${sig['entry_price']:.2f} (Z_vol={sig['z_vol']:.2f})")
+                        return signals
+                    except Exception as e:
+                        log.error(f"Error scanning {ticker} for daily signals: {e}")
+                        return []
+            
+            tasks = [process_ticker(t) for t in tickers]
+            results = await asyncio.gather(*tasks)
+            
+            for res in results:
+                if res:
+                    all_signals.extend(res)
+                    
+        if is_premarket and not self._warmup_logged:
+            log.info(f"🌅 Pre-market Donchian warm-up complete. Cached ATR for {len(self.atr_cache)} tickers.")
+            self._warmup_logged = True
+        elif is_postmarket:
+            self._warmup_logged = False
+            
         return all_signals

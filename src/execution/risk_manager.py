@@ -129,12 +129,12 @@ class RiskManager:
             tp = take_profit
         else:
             atr_distance = initial_atr * self.atr_multiplier
+            from src.utils.math_utils import calculate_take_profit
+            tp = calculate_take_profit(entry_price, initial_atr, direction)
             if direction == "Long":
                 initial_stop = entry_price - atr_distance
-                tp = entry_price + (atr_distance * 2.0)  # 2:1 reward-to-risk
             else:
                 initial_stop = entry_price + atr_distance
-                tp = entry_price - (atr_distance * 2.0)
         
         self.active_positions[ticker] = {
             "entry_price": entry_price,

@@ -268,6 +268,10 @@ async def lifespan(app: FastAPI):
         log.info("[ML MODEL] ✅ Trained XGBoost Sentinel model weights loaded into memory.")
     elif os.path.exists("data/ml_training_data.parquet"):
         app.state.engine.xgb_model.train("data/ml_training_data.parquet")
+    else:
+        msg = "⚠️ XGBoost Sentinel not loaded — no model file or training data found.\nAll signals will show LOW conviction by default. Run backtester_v2 to generate training data, then retrain before relying on conviction scores."
+        log.warning(msg)
+        asyncio.create_task(app.state.engine.alerts.dispatch_informational(msg))
     
     app.state.extended_task = asyncio.create_task(app.state.engine.run_extended_hours_scanner_loop())
     app.state.scanner_task = asyncio.create_task(app.state.engine.run_dynamic_scanner_loop())
@@ -310,7 +314,8 @@ async def health_check():
         "status": "online",
         "service": "RallyHunter Intraday Engine",
         "mode": "Dynamic Broad Market Discovery (No Watchlist)",
-        "tracked_tickers_count": len(active_symbols)
+        "tracked_tickers_count": len(active_symbols),
+        "ml_model_active": app.state.engine.xgb_model.is_active if hasattr(app.state, "engine") else False
     }
 
 if __name__ == "__main__":
