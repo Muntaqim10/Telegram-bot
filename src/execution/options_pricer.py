@@ -211,9 +211,13 @@ class OptionsPricer:
                 if not fallback_contract:
                     fallback_contract = contract
 
-                # Gate 2: Affordability Filter (Max $2.50 premium)
-                if ask > 2.50:
-                    fail_reason = f"Premium too expensive (${ask:.2f} ask)."
+                # Gate 2: Affordability Filter
+                import os
+                default_max = max(2.50, strike * 0.015) # Dynamic: allows up to $7.50 on a $500 stock, or $2.50 on a $50 stock
+                max_premium = float(os.getenv("MAX_PREMIUM_DOLLARS", str(default_max)))
+                
+                if ask > max_premium:
+                    fail_reason = f"Premium too expensive (${ask:.2f} > ${max_premium:.2f} limit)."
                     continue
                     
                 # Gate 3: Breakeven Gate
