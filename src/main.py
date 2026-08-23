@@ -213,10 +213,14 @@ class IntradayEngine:
 
                     # 1. Process Tick in Strategy
                     now = pd.Timestamp.now(tz="US/Eastern")  # Cache once per tick
+                    
+                    # VWAP FIX: Only pass volume for actual trades. Quotes inflate VWAP.
+                    actual_volume = size if event.get("type") == "trade" else 0.0
+                    
                     signal = self.orb_strategy.process_tick(
                         ticker=ticker, 
                         price=price, 
-                        volume=size, 
+                        volume=actual_volume, 
                         timestamp=now
                     )
                     
