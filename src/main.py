@@ -20,6 +20,7 @@ from fastapi import FastAPI
 from logging.handlers import RotatingFileHandler
 
 # Setup Logging
+os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
@@ -35,7 +36,7 @@ from src.strategy.orb_intraday import ORBStrategy
 from src.strategy.donchian_daily import DonchianSwingStrategy
 from src.strategy.extended_hours_scanner import ExtendedHoursScanner
 from src.ai.blind_sentiment import BlindSentimentAnalyzer
-from src.ai.xgb_micro import XGBMicroSentinel
+from src.ai.xgb_micro_v2 import XGBMicroSentinelV2
 from src.execution.risk_manager import RiskManager
 from src.alerts import AlertGateway
 
@@ -74,7 +75,7 @@ class IntradayEngine:
         self.donchian_strategy = DonchianSwingStrategy(TRADIER_TOKEN)
         self.extended_scanner = ExtendedHoursScanner()
         self.sentiment_analyzer = BlindSentimentAnalyzer(GROQ_API_KEY)
-        self.xgb_model = XGBMicroSentinel()
+        self.xgb_model = XGBMicroSentinelV2()
         self.risk_manager = RiskManager()
         self.alerts = AlertGateway(redis_client)
         self._shared_http_session = None  # Lazy-initialized shared aiohttp session
@@ -266,10 +267,10 @@ async def lifespan(app: FastAPI):
     # Load ML models
     if app.state.engine.xgb_model._is_trained:
         log.info("[ML MODEL] ✅ Trained XGBoost Sentinel model weights loaded into memory.")
-    elif os.path.exists("data/ml_training_data.parquet"):
-        app.state.engine.xgb_model.train("data/ml_training_data.parquet")
+    elif os.path.exists("data/ml_training_data_v2.parquet"):
+        app.state.engine.xgb_model.train("data/ml_training_data_v2.parquet")
     else:
-        msg = "⚠️ XGBoost Sentinel not loaded — no model file or training data found.\nAll signals will show LOW conviction by default. Run backtester_v2 to generate training data, then retrain before relying on conviction scores."
+        msg = "⚠️ XGBoost Sentinel V2 not loaded — no model file or training data found.\nAll signals will show LOW conviction by default. Run backtester_v2 to generate training data, then retrain before relying on conviction scores."
         log.warning(msg)
         asyncio.create_task(app.state.engine.alerts.dispatch_informational(msg))
     
