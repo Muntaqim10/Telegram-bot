@@ -39,7 +39,7 @@ class BlindSentimentAnalyzer:
         
         try:
             resp = await self._groq.chat.completions.create(
-                model="llama3-8b-8192",
+                model="llama-3.1-8b-instant",
                 messages=[
                     {"role": "system", "content": f"You are an objective, deterministic financial text processing engine. Your sole task is to extract and quantify fundamental market sentiment for the target ticker {ticker} from raw financial news headlines. Strictly verify that the headlines correspond to {ticker}. Do not attribute news of other companies to {ticker}. Return ONLY a valid JSON object."},
                     {"role": "user", "content": prompt}

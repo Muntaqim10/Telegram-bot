@@ -1,6 +1,8 @@
 import logging
 import pandas as pd
 import numpy as np
+import asyncio
+from src.database import close_trade as db_close_trade
 
 log = logging.getLogger(__name__)
 
@@ -130,6 +132,15 @@ class RiskManager:
             log.info(f"[{ticker}] TRADE CLOSED: {outcome_status}. PnL: {pnl_pct*100:.2f}% (Exit: ${exit_price:.2f})")
         except Exception as e:
             log.error(f"Failed to write trade outcome for {ticker}: {e}")
+
+        # Archive to SQLite database
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(db_close_trade(ticker, exit_price, outcome_status))
+        except RuntimeError:
+            pass # Not running in an async event loop
+        except Exception as e:
+            log.warning(f"Failed to schedule database archive for {ticker}: {e}")
 
     def add_position(self, ticker: str, entry_price: float, initial_atr: float, direction: str, stop_loss: float = None, take_profit: float = None) -> dict:
         """

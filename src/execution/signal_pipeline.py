@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timedelta
+from typing import Dict, Any
 from src.models.signal import TradeSignal
 
 log = logging.getLogger("rallyhunter.pipeline")
@@ -66,9 +67,9 @@ class SignalPipeline:
         verdict = xgb_result['verdict']
 
         # Conviction tiers based on model output
-        if verdict == "CONCORDANT" and win_prob >= 0.75:
+        if win_prob >= 0.75:
             conviction = "🟢 HIGH"
-        elif verdict == "CONCORDANT" and win_prob >= 0.55:
+        elif win_prob >= 0.55:
             conviction = "🟡 MEDIUM"
         else:
             conviction = "🔴 LOW"
@@ -112,11 +113,13 @@ class SignalPipeline:
         else:
             target_strike = float(round(signal["entry_price"] * 0.975)) # 2.5% OTM for balanced cost/leverage
 
+        opt_type = "put" if direction == "Short" else "call"
+
         pricing_data = await self.options_pricer.find_optimal_contract(
             ticker=ticker,
             expiration=expiration,
             target_strike=target_strike,
-            option_type="put" if direction == "Short" else "call",
+            option_type=opt_type,
             take_profit=risk_levels["take_profit"],
             session=session
         )

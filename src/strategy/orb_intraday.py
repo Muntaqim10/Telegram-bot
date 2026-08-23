@@ -183,7 +183,7 @@ class ORBStrategy:
                     return signal_data
 
                 # Reversal Entry: Failed Breakdown Reclaim (Price was below ORB Low, now reclaims VWAP & 5m 9-EMA)
-                if price <= orb["low"] * 1.005 and price >= state["vwap"] and ema_trend_5m_bullish == 1:
+                if price <= orb["low"] * 1.005 and price >= state["vwap"] and ema_trend_5m_bullish == 1 and ema_trend_1m_bullish == 1:
                     self.active_signals[ticker] = {"direction": "Long", "time": timestamp}
                     signal_data.update({"direction": "Long", "catalyst_type": "🔄 FAKEOUT BREAKDOWN CALL REVERSAL", "tf_confluence": "Reversal+5m+VWAP"})
                     return signal_data
@@ -212,7 +212,7 @@ class ORBStrategy:
                     return signal_data
 
                 # Reversal Entry: Failed Breakout Reversal (Price pushed above ORB High, lost VWAP & 5m 9-EMA)
-                if price >= orb["high"] * 0.995 and price <= state["vwap"] and ema_trend_5m_bullish == 0:
+                if price >= orb["high"] * 0.995 and price <= state["vwap"] and ema_trend_5m_bullish == 0 and ema_trend_1m_bullish == 0:
                     self.active_signals[ticker] = {"direction": "Short", "time": timestamp}
                     signal_data.update({"direction": "Short", "catalyst_type": "🔄 FAKEOUT BREAKOUT PUT REVERSAL", "tf_confluence": "Reversal+5m+VWAP"})
                     return signal_data

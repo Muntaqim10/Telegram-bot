@@ -17,7 +17,7 @@ load_dotenv(dotenv_path=config_env)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("historical_downloader")
 
-TIINGO_TOKEN = os.getenv("TIINGO_API_KEY")
+TIINGO_TOKEN = os.getenv("TIINGO_TOKEN")
 
 # Major Indexes & Mag 7 Stocks
 MAG7_AND_INDEXES = [

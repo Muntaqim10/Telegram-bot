@@ -4,6 +4,7 @@ import asyncio
 import logging
 import pandas as pd
 from typing import List
+from src.utils.math_utils import calculate_take_profit
 
 log = logging.getLogger(__name__)
 
@@ -127,10 +128,10 @@ class IntradayBacktesterV2:
                             atr_dist = current_atr * self.engine.risk_manager.atr_multiplier
                             if signal_direction == "Long":
                                 stop_loss = signal_entry_price - atr_dist
-                                take_profit = signal_entry_price + (atr_dist * 2.0)
+                                take_profit = calculate_take_profit(signal_entry_price, current_atr, signal_direction)
                             else:
                                 stop_loss = signal_entry_price + atr_dist
-                                take_profit = signal_entry_price - (atr_dist * 2.0)
+                                take_profit = calculate_take_profit(signal_entry_price, current_atr, signal_direction)
                                 
                             # Path Evaluation over 5 forward trading days
                             future_df = df.loc[timestamp:]
