@@ -58,7 +58,7 @@ class XGBMicroSentinelV2:
                 return
                 
             features = [
-                "entry_time_minute", "entry_volume", "vwap_ratio", 
+                "entry_time_minute", "relative_volume", "vwap_ratio", 
                 "ema9_ratio", "ema_trend", "ema_trend_5m", 
                 "spy_correlation", "hod_ratio", "lod_ratio"
             ]
@@ -136,7 +136,7 @@ class XGBMicroSentinelV2:
 
         try:
             entry_time = features.get("entry_time_minute", 585)
-            entry_vol = features.get("entry_volume", 1000)
+            rel_vol = features.get("relative_volume", 1.0)
             vwap_ratio = features.get("vwap_ratio", 1.0)
             ema9_ratio = features.get("ema9_ratio", 1.0)
             ema_trend = features.get("ema_trend", 1)
@@ -144,7 +144,7 @@ class XGBMicroSentinelV2:
             
             X_live = pd.DataFrame([{
                 "entry_time_minute": entry_time, 
-                "entry_volume": entry_vol,
+                "relative_volume": rel_vol,
                 "vwap_ratio": vwap_ratio,
                 "ema9_ratio": ema9_ratio,
                 "ema_trend": ema_trend,

@@ -103,7 +103,7 @@ class IntradayBacktesterV2:
                                 "direction": signal_direction,
                                 "entry_price": signal_entry_price,
                                 "entry_time_minute": timestamp.hour * 60 + timestamp.minute,
-                                "entry_volume": volume,
+                                "relative_volume": signal.get("relative_volume", 1.0),
                                 "vwap_ratio": signal.get("vwap_ratio", 1.0),
                                 "ema9_ratio": signal.get("ema9_ratio", 1.0),
                                 "ema_trend": signal.get("ema_trend_bullish", 1),

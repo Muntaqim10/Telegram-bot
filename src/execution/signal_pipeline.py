@@ -49,7 +49,7 @@ class SignalPipeline:
         # 3. XGBoost Sentinel Check → Conviction Tier (never a silent kill)
         features = {
             "entry_time_minute": signal["timestamp"].hour * 60 + signal["timestamp"].minute,
-            "entry_volume": signal.get("volume", 100000),
+            "relative_volume": signal.get("relative_volume", 1.0),
             "vwap_ratio": signal.get("vwap_ratio", 1.0),
             "ema9_ratio": signal.get("ema9_ratio", 1.0),
             "ema_trend": signal.get("ema_trend_bullish", 1),

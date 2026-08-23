@@ -147,6 +147,7 @@ class ORBStrategy:
             # Volume Surge Confirmation: require current tick volume >= 1.5x the average ORB-window volume
             avg_orb_vol = (orb["orb_vol_sum"] / orb["orb_tick_count"]) if orb.get("orb_tick_count", 0) > 0 else 0.0
             has_volume_surge = volume >= (avg_orb_vol * self.vol_surge_multiplier) if avg_orb_vol > 0 else True
+            relative_volume = (volume / avg_orb_vol) if avg_orb_vol > 0 else 1.0
                 
             signal_data = {
                 "ticker": ticker,
@@ -165,6 +166,7 @@ class ORBStrategy:
                 "hod_ratio": hod_ratio,
                 "lod_ratio": lod_ratio,
                 "volume": volume,
+                "relative_volume": relative_volume,
                 "tf_confluence": "1m+5m+CRB+Daily"
             }
 
