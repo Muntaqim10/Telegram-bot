@@ -43,6 +43,33 @@ class AlertGateway:
         if self._session and not self._session.closed:
             await self._session.close()
 
+    async def dispatch_informational(self, message: str) -> bool:
+        """Raw dispatch for system alerts without database journaling."""
+        return await self._send_telegram(message)
+
+    async def dispatch_extended_hours(self, alert: dict) -> bool:
+        """
+        Dispatches an informational extended hours alert.
+        Does not interact with SQLite or log a formal trade.
+        """
+        ticker = alert["ticker"]
+        direction = alert["direction"]
+        pct_change = alert["pct_change"]
+        price = alert["price"]
+        vol = alert["volume"]
+        
+        emoji = "🚀" if direction == "Long" else "🩸"
+        color = "🟢" if direction == "Long" else "🔴"
+        
+        msg = (
+            f"🌙 <b>EXTENDED HOURS MOVER</b> 🌙\n\n"
+            f"<b>{ticker}</b> {emoji} <b>{direction} Setup</b>\n"
+            f"<b>Price:</b> ${price:.2f} (<b>{pct_change:+.2f}%</b>)\n"
+            f"<b>Ext Vol:</b> {vol:,.0f}\n\n"
+            f"<i>⚠️ Informational only. Options chain frozen. Will automatically re-evaluate at next session open.</i>"
+        )
+        return await self._send_telegram(msg)
+
     async def _send_telegram(self, text: str) -> bool:
         """Internal Telegram dispatcher supporting comma-separated chat IDs."""
         if not self._token or not self._chat_id: return False
@@ -130,9 +157,7 @@ class AlertGateway:
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "ticker": signal.ticker,
                 "price": signal.price,
-                "z_vol": f"{signal.z_vol:.2f}\u03c3",
                 "is_whale": signal.is_whale,
-                "growth": f"{signal.rev_growth:.1f}%",
                 "win_prob": f"{int(signal.win_probability*100)}%",
                 "sl": signal.stop_loss,
                 "tp": signal.take_profit,
@@ -140,7 +165,9 @@ class AlertGateway:
                 "direction": signal.signal_direction,
                 "catalyst": signal.catalyst,
                 "xgb_win_prob": signal.xgb_win_prob,
-                "sentinel_verdict": signal.sentinel_verdict
+                "sentinel_verdict": signal.sentinel_verdict,
+                "conviction": signal.conviction,
+                "warning_tag": signal.warning_tag if signal.warning_tag else ""
             }
             await add_trade(trade_data)
         except Exception as e:

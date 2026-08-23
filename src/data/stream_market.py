@@ -17,6 +17,7 @@ class TradierMarketStream:
         self.symbols = symbols
         self.event_queue = event_queue
         self.session_id = None
+        self.ws = None
         self._running = False
         
     async def _create_session(self, session: aiohttp.ClientSession) -> str:
@@ -87,11 +88,26 @@ class TradierMarketStream:
                 log.warning("Tradier Stream disconnected. Reconnecting in 3 seconds...")
                 await asyncio.sleep(3)
                 
-    def update_symbols(self, new_symbols: List[str]):
+    async def update_symbols(self, new_symbols: List[str]):
         """Dynamically updates active symbols on Tradier stream."""
         old_count = len(self.symbols)
         self.symbols = new_symbols
-        log.info(f"🔄 [DYNAMIC STREAM] Symbol subscription pool updated from {old_count} to {len(self.symbols)} tickers.")
+        
+        if getattr(self, 'ws', None) and not self.ws.closed and self.session_id:
+            payload = {
+                "sessionid": self.session_id,
+                "symbols": self.symbols,
+                "filter": ["trade", "quote"],
+                "linebreak": True,
+                "validOnly": True
+            }
+            try:
+                await self.ws.send_json(payload)
+                log.info(f"🔄 [DYNAMIC STREAM] Symbol subscription live-updated from {old_count} to {len(self.symbols)} tickers without reconnecting.")
+            except Exception as e:
+                log.warning(f"🔄 [DYNAMIC STREAM] Failed to live-update symbols (will retry on next reconnect): {e}")
+        else:
+            log.info(f"🔄 [DYNAMIC STREAM] Symbol subscription pool updated from {old_count} to {len(self.symbols)} tickers (deferred to next reconnect).")
 
     def stop(self):
         self._running = False

@@ -32,6 +32,7 @@ log = logging.getLogger("rallyhunter.main")
 from src.data.stream_market import TradierMarketStream
 from src.strategy.orb_intraday import ORBStrategy
 from src.strategy.donchian_daily import DonchianSwingStrategy
+from src.strategy.extended_hours_scanner import ExtendedHoursScanner
 from src.ai.blind_sentiment import BlindSentimentAnalyzer
 from src.ai.xgb_micro import XGBMicroSentinel
 from src.execution.risk_manager import RiskManager
@@ -53,6 +54,7 @@ class IntradayEngine:
         self.market_stream = TradierMarketStream(TRADIER_TOKEN, initial_symbols, self.event_queue)
         self.orb_strategy = ORBStrategy(orb_minutes=15)
         self.donchian_strategy = DonchianSwingStrategy(TRADIER_TOKEN)
+        self.extended_scanner = ExtendedHoursScanner()
         self.sentiment_analyzer = BlindSentimentAnalyzer(GROQ_API_KEY)
         self.xgb_model = XGBMicroSentinel()
         self.risk_manager = RiskManager()
@@ -80,7 +82,7 @@ class IntradayEngine:
             try:
                 active_symbols = await self.dynamic_scanner.get_active_market_movers(max_symbols=50)
                 if active_symbols:
-                    self.market_stream.update_symbols(active_symbols)
+                    await self.market_stream.update_symbols(active_symbols)
             except Exception as e:
                 log.error(f"Dynamic scanner loop error: {e}")
             await asyncio.sleep(900) # Scan every 15 minutes
@@ -101,6 +103,18 @@ class IntradayEngine:
                 log.error(f"Donchian scanner loop error: {e}")
             await asyncio.sleep(3600) # Scan every hour
         
+    async def run_extended_hours_scanner_loop(self):
+        """Periodically polls the extended hours scanner for alerts."""
+        log.info("🌙 [EXTENDED SCANNER] Starting extended hours loop...")
+        while True:
+            try:
+                alerts = self.extended_scanner.evaluate_movers(pd.Timestamp.now(tz="US/Eastern"))
+                for alert in alerts:
+                    await self.alerts.dispatch_extended_hours(alert)
+            except Exception as e:
+                log.error(f"Extended scanner loop error: {e}")
+            await asyncio.sleep(60)
+            
     async def process_events(self):
         """Main event loop handling ticks from WebSockets."""
         log.info("Intraday Execution Engine Started. Listening for ticks...")
@@ -125,11 +139,17 @@ class IntradayEngine:
                         
                     # 0. Update Active Positions in Risk Manager
                     if ticker in self.risk_manager.active_positions:
-                        # Fallback ATR if not available yet in state
-                        current_atr = 1.5 
-                        spy_state = self.orb_strategy.intraday_state.get(ticker, {})
-                        if spy_state and "atr" in spy_state:
-                            current_atr = spy_state["atr"]
+                        orb_state = self.orb_strategy.intraday_state.get(ticker, {})
+                        
+                        cached_atr = None
+                        if hasattr(self, "donchian_strategy") and hasattr(self.donchian_strategy, "atr_cache"):
+                            cached_atr = self.donchian_strategy.atr_cache.get(ticker)
+                        
+                        if cached_atr and not pd.isna(cached_atr):
+                            current_atr = cached_atr
+                        else:
+                            log.warning(f"[{ticker}] No cached daily ATR available for trailing stop. Falling back to default ATR=1.5")
+                            current_atr = 1.5
                             
                         direction = self.risk_manager.active_positions[ticker]["direction"]
                         outcome = self.risk_manager.update_trailing_stop(ticker, price, current_atr, direction)
@@ -149,6 +169,15 @@ class IntradayEngine:
                         volume=size, 
                         timestamp=pd.Timestamp.now(tz="US/Eastern")
                     )
+                    
+                    # 1.5 Process for extended hours movers
+                    self.extended_scanner.process_event(event, pd.Timestamp.now(tz="US/Eastern"))
+                    
+                    # 2. Priority check for gap movers on open
+                    if not signal:
+                        signal = self.extended_scanner.consume_priority_signal(ticker, pd.Timestamp.now(tz="US/Eastern"))
+                        if signal:
+                            log.info(f"🚨 STRATEGY TRIGGER: Priority Open Eval for Extended Hours Mover {ticker}")
                     
                     if signal:
                         log.info(f"🚨 STRATEGY TRIGGER: {signal['direction']} on {ticker} at {price}")
@@ -191,7 +220,7 @@ async def lifespan(app: FastAPI):
     elif os.path.exists("data/ml_training_data.parquet"):
         app.state.engine.xgb_model.train("data/ml_training_data.parquet")
     
-    # Start tasks
+    app.state.extended_task = asyncio.create_task(app.state.engine.run_extended_hours_scanner_loop())
     app.state.scanner_task = asyncio.create_task(app.state.engine.run_dynamic_scanner_loop())
     app.state.donchian_task = asyncio.create_task(app.state.engine.run_donchian_scanner_loop())
     app.state.stream_task = asyncio.create_task(app.state.engine.market_stream.run())
@@ -202,6 +231,7 @@ async def lifespan(app: FastAPI):
     
     log.info("[SHUTDOWN] Terminating tasks...")
     app.state.engine.market_stream.stop()
+    app.state.extended_task.cancel()
     app.state.scanner_task.cancel()
     app.state.donchian_task.cancel()
     app.state.stream_task.cancel()

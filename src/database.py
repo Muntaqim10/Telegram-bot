@@ -88,9 +88,7 @@ def _init_db_sync():
             timestamp TEXT NOT NULL,
             ticker TEXT NOT NULL,
             price REAL NOT NULL,
-            z_vol TEXT NOT NULL,
             is_whale INTEGER NOT NULL,
-            growth TEXT NOT NULL,
             win_prob TEXT NOT NULL,
             sl REAL NOT NULL,
             tp REAL NOT NULL,
@@ -98,7 +96,9 @@ def _init_db_sync():
             direction TEXT NOT NULL,
             catalyst TEXT NOT NULL,
             xgb_win_prob REAL DEFAULT 0.5,
-            sentinel_verdict TEXT DEFAULT 'NOT_CHECKED'
+            sentinel_verdict TEXT DEFAULT 'NOT_CHECKED',
+            conviction TEXT DEFAULT '',
+            warning_tag TEXT DEFAULT ''
         )
     """)
     
@@ -109,9 +109,7 @@ def _init_db_sync():
             timestamp TEXT NOT NULL,
             ticker TEXT NOT NULL,
             price REAL NOT NULL,
-            z_vol TEXT NOT NULL,
             is_whale INTEGER NOT NULL,
-            growth TEXT NOT NULL,
             win_prob TEXT NOT NULL,
             sl REAL NOT NULL,
             tp REAL NOT NULL,
@@ -119,21 +117,23 @@ def _init_db_sync():
             direction TEXT NOT NULL,
             catalyst TEXT NOT NULL,
             xgb_win_prob REAL DEFAULT 0.5,
-            sentinel_verdict TEXT DEFAULT 'NOT_CHECKED'
+            sentinel_verdict TEXT DEFAULT 'NOT_CHECKED',
+            conviction TEXT DEFAULT '',
+            warning_tag TEXT DEFAULT ''
         )
     """)
     conn.commit()
     
-    # Migrate existing tables to add sentinel columns if they don't exist
+    # Migrate existing tables to add new columns if they don't exist
     for table in ['trade_log', 'trade_log_archive']:
-        try:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN xgb_win_prob REAL DEFAULT 0.5")
-        except Exception:
-            pass  # Column already exists
-        try:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN sentinel_verdict TEXT DEFAULT 'NOT_CHECKED'")
-        except Exception:
-            pass  # Column already exists
+        for col, col_type in [("xgb_win_prob", "REAL DEFAULT 0.5"), 
+                              ("sentinel_verdict", "TEXT DEFAULT 'NOT_CHECKED'"),
+                              ("conviction", "TEXT DEFAULT ''"),
+                              ("warning_tag", "TEXT DEFAULT ''")]:
+            try:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+            except Exception:
+                pass  # Column already exists
     conn.commit()
     
     # Run CSV migrations
@@ -147,27 +147,30 @@ async def init_db():
 def _add_trade_sync(table: str, trade: dict[str, Any]):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute(f"""
-        INSERT INTO {table} (
-            timestamp, ticker, price, z_vol, is_whale, growth, win_prob, sl, tp, strategy, direction, catalyst,
-            xgb_win_prob, sentinel_verdict
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        trade.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-        trade.get("ticker", "").upper(),
-        float(trade.get("price", 0.0)),
-        str(trade.get("z_vol", "0.0σ")),
-        1 if trade.get("is_whale") else 0,
-        str(trade.get("growth", "0%")),
-        str(trade.get("win_prob", "50%")),
-        float(trade.get("sl", 0.0)),
-        float(trade.get("tp", 0.0)),
-        trade.get("strategy", "Unknown"),
-        trade.get("direction", "Long"),
-        trade.get("catalyst", ""),
-        float(trade.get("xgb_win_prob", 0.5)),
-        trade.get("sentinel_verdict", "NOT_CHECKED")
-    ))
+    
+    cursor.execute(f"PRAGMA table_info({table})")
+    existing_cols = [row["name"] for row in cursor.fetchall()]
+    
+    insert_cols = []
+    insert_vals = []
+    
+    # Add all provided trade data
+    for k, v in trade.items():
+        insert_cols.append(k)
+        insert_vals.append(v)
+        
+    # Handle legacy columns for old schema
+    if "z_vol" in existing_cols and "z_vol" not in trade:
+        insert_cols.append("z_vol")
+        insert_vals.append("")
+    if "growth" in existing_cols and "growth" not in trade:
+        insert_cols.append("growth")
+        insert_vals.append("")
+        
+    col_str = ", ".join(insert_cols)
+    val_str = ", ".join(["?"] * len(insert_vals))
+    
+    cursor.execute(f"INSERT INTO {table} ({col_str}) VALUES ({val_str})", tuple(insert_vals))
     conn.commit()
     conn.close()
 
@@ -188,23 +191,30 @@ def _get_trades_sync(table: str) -> list[dict[str, Any]]:
     
     result = []
     for r in rows:
-        result.append({
-            "id": r["id"],
-            "timestamp": r["timestamp"],
-            "ticker": r["ticker"],
-            "price": r["price"],
-            "z_vol": r["z_vol"],
-            "is_whale": bool(r["is_whale"]),
-            "growth": r["growth"],
-            "win_prob": r["win_prob"],
-            "sl": r["sl"],
-            "tp": r["tp"],
-            "strategy": r["strategy"],
-            "direction": r["direction"],
-            "catalyst": r["catalyst"],
-            "xgb_win_prob": float(r["xgb_win_prob"]) if r["xgb_win_prob"] is not None else 0.5,
-            "sentinel_verdict": r["sentinel_verdict"] or "NOT_CHECKED"
-        })
+        row_dict = dict(r)
+        trade_obj = {
+            "id": row_dict["id"],
+            "timestamp": row_dict["timestamp"],
+            "ticker": row_dict["ticker"],
+            "price": row_dict["price"],
+            "is_whale": bool(row_dict["is_whale"]),
+            "win_prob": row_dict["win_prob"],
+            "sl": row_dict["sl"],
+            "tp": row_dict["tp"],
+            "strategy": row_dict["strategy"],
+            "direction": row_dict["direction"],
+            "catalyst": row_dict["catalyst"],
+            "xgb_win_prob": float(row_dict.get("xgb_win_prob", 0.5)) if row_dict.get("xgb_win_prob") is not None else 0.5,
+            "sentinel_verdict": row_dict.get("sentinel_verdict") or "NOT_CHECKED",
+            "conviction": row_dict.get("conviction", ""),
+            "warning_tag": row_dict.get("warning_tag", "")
+        }
+        if "z_vol" in row_dict:
+            trade_obj["z_vol"] = row_dict["z_vol"]
+        if "growth" in row_dict:
+            trade_obj["growth"] = row_dict["growth"]
+            
+        result.append(trade_obj)
     return result
 
 async def get_live_trades() -> list[dict[str, Any]]:
@@ -222,23 +232,29 @@ def _get_active_trade_sync(ticker: str) -> dict[str, Any] | None:
     row = cursor.fetchone()
     conn.close()
     if row:
-        return {
-            "id": row["id"],
-            "timestamp": row["timestamp"],
-            "ticker": row["ticker"],
-            "price": row["price"],
-            "z_vol": row["z_vol"],
-            "is_whale": bool(row["is_whale"]),
-            "growth": row["growth"],
-            "win_prob": row["win_prob"],
-            "sl": row["sl"],
-            "tp": row["tp"],
-            "strategy": row["strategy"],
-            "direction": row["direction"],
-            "catalyst": row["catalyst"],
-            "xgb_win_prob": float(row["xgb_win_prob"]) if row["xgb_win_prob"] is not None else 0.5,
-            "sentinel_verdict": row["sentinel_verdict"] or "NOT_CHECKED"
+        row_dict = dict(row)
+        trade_obj = {
+            "id": row_dict["id"],
+            "timestamp": row_dict["timestamp"],
+            "ticker": row_dict["ticker"],
+            "price": row_dict["price"],
+            "is_whale": bool(row_dict["is_whale"]),
+            "win_prob": row_dict["win_prob"],
+            "sl": row_dict["sl"],
+            "tp": row_dict["tp"],
+            "strategy": row_dict["strategy"],
+            "direction": row_dict["direction"],
+            "catalyst": row_dict["catalyst"],
+            "xgb_win_prob": float(row_dict.get("xgb_win_prob", 0.5)) if row_dict.get("xgb_win_prob") is not None else 0.5,
+            "sentinel_verdict": row_dict.get("sentinel_verdict") or "NOT_CHECKED",
+            "conviction": row_dict.get("conviction", ""),
+            "warning_tag": row_dict.get("warning_tag", "")
         }
+        if "z_vol" in row_dict:
+            trade_obj["z_vol"] = row_dict["z_vol"]
+        if "growth" in row_dict:
+            trade_obj["growth"] = row_dict["growth"]
+        return trade_obj
     return None
 
 async def get_active_trade(ticker: str) -> dict[str, Any] | None:
@@ -252,17 +268,18 @@ def _close_trade_sync(ticker: str, exit_price: float, outcome: str):
     row = cursor.fetchone()
     if row:
         trade_id = row["id"]
-        new_catalyst = f"{row['catalyst']} | Closed {outcome} at {exit_price}" if row['catalyst'] else f"Closed {outcome} at {exit_price}"
-        cursor.execute("""
-            INSERT INTO trade_log_archive (
-                timestamp, ticker, price, z_vol, is_whale, growth, win_prob, sl, tp, strategy, direction, catalyst,
-                xgb_win_prob, sentinel_verdict
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            row["timestamp"], row["ticker"], row["price"], row["z_vol"], row["is_whale"],
-            row["growth"], row["win_prob"], row["sl"], row["tp"], row["strategy"],
-            row["direction"], new_catalyst, row["xgb_win_prob"], row["sentinel_verdict"]
-        ))
+        row_dict = dict(row)
+        # We don't want to insert the original ID into the archive table
+        if "id" in row_dict:
+            del row_dict["id"]
+            
+        row_dict["catalyst"] = f"{row_dict['catalyst']} | Closed {outcome} at {exit_price}" if row_dict.get('catalyst') else f"Closed {outcome} at {exit_price}"
+        
+        insert_cols = list(row_dict.keys())
+        col_str = ", ".join(insert_cols)
+        val_str = ", ".join(["?"] * len(insert_cols))
+        
+        cursor.execute(f"INSERT INTO trade_log_archive ({col_str}) VALUES ({val_str})", tuple(row_dict.values()))
         cursor.execute("DELETE FROM trade_log WHERE id = ?", (trade_id,))
     conn.commit()
     conn.close()

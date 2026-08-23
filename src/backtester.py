@@ -86,9 +86,16 @@ class IntradayBacktester:
                             spy_corr = spy_state.get("last_price") / spy_vwap if spy_vwap else 1.0
                             
                             # Establish SL/TP
-                            current_atr = 1.5
-                            if ticker in self.engine.orb_strategy.intraday_state and "atr" in self.engine.orb_strategy.intraday_state[ticker]:
-                                current_atr = self.engine.orb_strategy.intraday_state[ticker]["atr"]
+                            cached_atr = None
+                            if hasattr(self.engine, "donchian_strategy") and hasattr(self.engine.donchian_strategy, "atr_cache"):
+                                cached_atr = self.engine.donchian_strategy.atr_cache.get(ticker)
+                            
+                            if cached_atr and not pd.isna(cached_atr):
+                                current_atr = cached_atr
+                            else:
+                                import logging
+                                logging.getLogger("rallyhunter.backtest").warning(f"[{ticker}] No cached daily ATR available. Falling back to default ATR=1.5")
+                                current_atr = 1.5
                             
                             atr_dist = current_atr * self.engine.risk_manager.atr_multiplier
                             if signal_direction == "Long":
@@ -114,39 +121,34 @@ class IntradayBacktester:
                                 "lod_ratio": signal.get("lod_ratio", 1.0)
                             }
                     else:
-                        # Path-aware evaluation
-                        if signal_direction == "Long":
-                            if price <= stop_loss:
-                                features_at_entry["target"] = 0
-                                features_at_entry["max_gain"] = (price - signal_entry_price) / signal_entry_price
-                                self.training_data.append(features_at_entry)
-                                break
-                            elif price >= take_profit:
-                                features_at_entry["target"] = 1
-                                features_at_entry["max_gain"] = (price - signal_entry_price) / signal_entry_price
-                                self.training_data.append(features_at_entry)
-                                break
-                        else: # Short
-                            if price >= stop_loss:
-                                features_at_entry["target"] = 0
-                                features_at_entry["max_gain"] = (signal_entry_price - price) / signal_entry_price
-                                self.training_data.append(features_at_entry)
-                                break
-                            elif price <= take_profit:
-                                features_at_entry["target"] = 1
-                                features_at_entry["max_gain"] = (signal_entry_price - price) / signal_entry_price
-                                self.training_data.append(features_at_entry)
-                                break
-                else:
-                    # End of Day Evaluation if SL/TP never hit
-                    if signal_fired and "target" not in features_at_entry:
-                        features_at_entry["target"] = 0 # Default to 0 if TP not hit
-                        if signal_direction == "Long":
-                            features_at_entry["max_gain"] = (price - signal_entry_price) / signal_entry_price
-                        else:
-                            features_at_entry["max_gain"] = (signal_entry_price - price) / signal_entry_price
+                        # Path-aware 5-day evaluation
+                        all_dates = list(pd.Series(df.index.date).unique())
+                        current_date_idx = all_dates.index(date)
+                        end_date_idx = min(current_date_idx + 5, len(all_dates) - 1)
+                        end_date = all_dates[end_date_idx]
+                        
+                        forward_df = df.loc[timestamp : str(end_date) + " 23:59:59"]
+                        
+                        target = 0
+                        max_gain = 0.0
+                        
+                        for f_timestamp, f_row in forward_df.iterrows():
+                            f_price = f_row["close"]
+                            if signal_direction == "Long":
+                                current_gain = (f_price - signal_entry_price) / signal_entry_price
+                                if current_gain > max_gain: max_gain = current_gain
+                                if f_price <= stop_loss: target = 0; break
+                                elif f_price >= take_profit: target = 1; break
+                            else:
+                                current_gain = (signal_entry_price - f_price) / signal_entry_price
+                                if current_gain > max_gain: max_gain = current_gain
+                                if f_price >= stop_loss: target = 0; break
+                                elif f_price <= take_profit: target = 1; break
+                                
+                        features_at_entry["target"] = target
+                        features_at_entry["max_gain"] = max_gain
                         self.training_data.append(features_at_entry)
-                    
+                        break
         log.info(f"Backtest complete. Generated {len(self.training_data)} training samples.")
         
         # Save to parquet for ML training
