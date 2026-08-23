@@ -144,3 +144,8 @@ class RiskManager:
         }
         log.info(f"Position added for {ticker} ({direction}) at {entry_price}. Stop: {initial_stop:.2f}, TP: {tp:.2f}")
         return {"stop_loss": initial_stop, "take_profit": tp}
+        
+    def reset_daily(self):
+        """Clears active positions to prevent stale runners from leaking into the next day."""
+        self.active_positions.clear()
+

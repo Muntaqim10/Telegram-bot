@@ -158,8 +158,10 @@ class IntradayEngine:
                 # Reset once per day, at or after 9:29 AM, before the ORB window opens
                 if now.hour == 9 and now.minute >= 29 and self._last_reset_date != today:
                     self.orb_strategy.reset_daily()
+                    self.extended_scanner.reset_daily()
+                    self.risk_manager.reset_daily()
                     self._last_reset_date = today
-                    log.info(f"🔄 [DAILY RESET] ORB strategy state cleared for {today}. Fresh VWAP/EMA/ORB will build from 9:30.")
+                    log.info(f"🔄 [DAILY RESET] Strategy states and memory cleared for {today}. Fresh VWAP/EMA/ORB will build from 9:30.")
             except Exception as e:
                 log.error(f"Daily reset loop error: {e}")
             await asyncio.sleep(30)  # Check every 30 seconds

@@ -153,3 +153,9 @@ class ExtendedHoursScanner:
                 "strategy": "EXTENDED_GAP"
             }
         return None
+        
+    def reset_daily(self):
+        """Clears memory to prevent leaks across days (called automatically by main engine)."""
+        self.ticker_state.clear()
+        self.triggered_tickers.clear()
+
