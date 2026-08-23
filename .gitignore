@@ -5,3 +5,7 @@ __pycache__/
 /data/
 *.parquet
 *.db
+
+# Logs
+logs/
+*.log

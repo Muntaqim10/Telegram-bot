@@ -23,11 +23,11 @@ async def run_pipeline():
     log.info("Step 2/3: Simulating 4-timeframe strategy across historical bars...")
     import redis.asyncio as aioredis
     from src.main import IntradayEngine
-    from src.backtester import IntradayBacktester
+    from src.backtester_v2 import IntradayBacktesterV2
     
     redis = await aioredis.from_url("redis://localhost:6379/0", decode_responses=True)
     engine = IntradayEngine(redis)
-    backtester = IntradayBacktester(engine)
+    backtester = IntradayBacktesterV2(engine)
     
     data_dir = os.path.abspath("data/intraday/")
     await backtester.run_simulation(data_dir)
@@ -35,9 +35,9 @@ async def run_pipeline():
     
     # 3. Retrain XGBoost Model
     log.info("Step 3/3: Retraining XGBoost Sentinel ML Model...")
-    from src.ai.xgb_micro import XGBMicroSentinel
-    model = XGBMicroSentinel()
-    out_parquet = os.path.abspath("data/ml_training_data.parquet")
+    from src.ai.xgb_micro_v2 import XGBMicroSentinelV2
+    model = XGBMicroSentinelV2()
+    out_parquet = os.path.abspath("data/ml_training_data_v2.parquet")
     if os.path.exists(out_parquet):
         model.train(out_parquet)
         log.info("🎉 SUCCESS: Backtest complete & XGBoost model retrained!")
