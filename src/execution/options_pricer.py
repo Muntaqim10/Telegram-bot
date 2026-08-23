@@ -22,7 +22,7 @@ class OptionsPricer:
         
     async def find_optimal_contract(
         self, ticker: str, expiration: str, target_strike: float, 
-        option_type: str, take_profit: float
+        option_type: str, take_profit: float, session=None
     ) -> Dict[str, Any]:
         """
         Scans the chain for an optimal contract near the target strike that passes:
@@ -60,31 +60,42 @@ class OptionsPricer:
             # 2. Fetch with Exponential Backoff
             if not data:
                 max_retries = 3
+                
+                async def perform_request(s):
+                    async with s.get(url, headers=self.headers, timeout=10.0) as resp:
+                        if resp.status == 429:
+                            return 429, None
+                        if resp.status != 200:
+                            if 400 <= resp.status < 500:
+                                return resp.status, None
+                            raise aiohttp.ClientError(f"HTTP {resp.status}")
+                        return 200, await resp.json()
+
                 for attempt in range(1, max_retries + 1):
                     try:
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(url, headers=self.headers, timeout=10.0) as resp:
-                                if resp.status == 429:
-                                    if attempt < max_retries:
-                                        sleep_time = 2 ** (attempt - 1)
-                                        log.warning(f"Tradier rate limit (429) hit for {ticker}. Retrying in {sleep_time}s (Attempt {attempt}/{max_retries})")
-                                        await asyncio.sleep(sleep_time)
-                                        continue
-                                    else:
-                                        log.error(f"Tradier rate limit exhausted for {ticker} after {max_retries} attempts.")
-                                        return result
-                                        
-                                if resp.status != 200:
-                                    # Don't retry on other 4xx errors (e.g., 401 Unauthorized, 404 Not Found)
-                                    if 400 <= resp.status < 500:
-                                        log.error(f"Tradier API error {resp.status} for {ticker}. Aborting.")
-                                        return result
-                                    log.warning(f"Tradier non-200 status: {resp.status} for {ticker}. Retrying...")
-                                    raise aiohttp.ClientError(f"HTTP {resp.status}")
+                        if session:
+                            status, resp_data = await perform_request(session)
+                        else:
+                            async with aiohttp.ClientSession() as s:
+                                status, resp_data = await perform_request(s)
+                                
+                        if status == 429:
+                            if attempt < max_retries:
+                                sleep_time = 2 ** (attempt - 1)
+                                log.warning(f"Tradier rate limit (429) hit for {ticker}. Retrying in {sleep_time}s (Attempt {attempt}/{max_retries})")
+                                await asyncio.sleep(sleep_time)
+                                continue
+                            else:
+                                log.error(f"Tradier rate limit exhausted for {ticker} after {max_retries} attempts.")
+                                return result
+                                
+                        if status != 200:
+                            log.error(f"Tradier API error {status} for {ticker}. Aborting.")
+                            return result
 
-                                data = await resp.json()
-                                self._chain_cache[cache_key] = (time.time(), data)
-                                break # Success, exit retry loop
+                        data = resp_data
+                        self._chain_cache[cache_key] = (time.time(), data)
+                        break # Success, exit retry loop
                     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                         if attempt < max_retries:
                             sleep_time = 2 ** (attempt - 1)

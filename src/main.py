@@ -131,7 +131,7 @@ class IntradayEngine:
                     for signal in signals:
                         # Pipe Donchian daily signals straight into the signal pipeline
                         # SPY VWAP ratio doesn't apply to daily bars, so we default to 1.0
-                        await self.signal_pipeline.process_signal(signal, spy_vwap_ratio=1.0)
+                        asyncio.create_task(self._dispatch_signal_task(signal, 1.0))
             except Exception as e:
                 log.error(f"Donchian scanner loop error: {e}")
             await asyncio.sleep(3600) # Scan every hour
@@ -166,6 +166,23 @@ class IntradayEngine:
                 log.error(f"Daily reset loop error: {e}")
             await asyncio.sleep(30)  # Check every 30 seconds
             
+    async def _dispatch_signal_task(self, signal: dict, spy_vwap_ratio: float):
+        """Background wrapper to process signals without blocking the tick stream loop."""
+        ticker = signal["ticker"]
+        # Try to acquire the evaluation lock to prevent double entries
+        if not self.risk_manager.mark_pending(ticker):
+            log.info(f"🚫 BLOCKING {ticker}: Already an active or pending position.")
+            return
+            
+        try:
+            session = await self.get_shared_session()
+            await self.signal_pipeline.process_signal(signal, spy_vwap_ratio, session=session)
+        except Exception as e:
+            log.error(f"Error in background signal pipeline for {ticker}: {e}")
+        finally:
+            # Always release the lock
+            self.risk_manager.clear_pending(ticker)
+
     async def process_events(self):
         """Main event loop handling ticks from WebSockets."""
         log.info("Intraday Execution Engine Started. Listening for ticks...")
@@ -243,7 +260,8 @@ class IntradayEngine:
                         if spy_state and spy_state.get("vwap"):
                             spy_vwap_ratio = spy_state["last_price"] / spy_state["vwap"]
                             
-                        await self.signal_pipeline.process_signal(signal, spy_vwap_ratio)
+                        # Dispatch into background task to prevent blocking the tick loop!
+                        asyncio.create_task(self._dispatch_signal_task(signal, spy_vwap_ratio))
                         
             except Exception as e:
                 log.error(f"Event Loop Error: {e}")

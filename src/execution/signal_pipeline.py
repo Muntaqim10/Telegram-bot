@@ -14,7 +14,7 @@ class SignalPipeline:
         self.alerts = alerts
         self.donchian_strategy = donchian_strategy
 
-    async def process_signal(self, signal: dict, spy_vwap_ratio: float):
+    async def process_signal(self, signal: Dict[str, Any], spy_vwap_ratio: float = 1.0, session=None):
         """Passes the raw signal through AI filters before alerting."""
         ticker = signal["ticker"]
         direction = signal["direction"]
@@ -37,7 +37,7 @@ class SignalPipeline:
             log.info(f"⚠️ {ticker} Put: Price overextended ({vwap_ratio:.4f}). Tagging alert, not blocking.")
 
         # 2. AI Sentiment Check (Blind)
-        headlines = await self.news_fetcher.get_headlines(ticker)
+        headlines = await self.news_fetcher.get_headlines(ticker, session=session)
         sent_score, catalyst, is_whale, sent_conf = await self.sentiment_analyzer.score_headlines(ticker, headlines)
 
         if direction == "Short" and sent_score > 0.65:
@@ -91,6 +91,7 @@ class SignalPipeline:
             if self.donchian_strategy and hasattr(self.donchian_strategy, "atr_cache"):
                 cached_atr = self.donchian_strategy.atr_cache.get(ticker)
             
+            import pandas as pd
             if cached_atr and not pd.isna(cached_atr):
                 risk_levels = self.risk_manager.add_position(ticker, signal["entry_price"], initial_atr=cached_atr, direction=signal["direction"])
             else:
@@ -111,13 +112,13 @@ class SignalPipeline:
         else:
             target_strike = float(round(signal["entry_price"] * 0.975)) # 2.5% OTM for balanced cost/leverage
 
-        opt_type = "call" if signal["direction"].upper() == "LONG" else "put"
         pricing_data = await self.options_pricer.find_optimal_contract(
             ticker=ticker,
             expiration=expiration,
             target_strike=target_strike,
-            option_type=opt_type,
-            take_profit=risk_levels["take_profit"]
+            option_type="put" if direction == "Short" else "call",
+            take_profit=risk_levels["take_profit"],
+            session=session
         )
         
         # Pull the actual chosen strike, which might differ from target_strike due to affordability/liquidity gates

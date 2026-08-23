@@ -17,7 +17,7 @@ class NewsFetcher:
         self._cache = {}  # (ticker, date) -> {"headlines": List[str], "fetched_at": datetime}
         self.cache_ttl = int(os.getenv("NEWS_CACHE_TTL_SECONDS", "300"))
 
-    async def get_headlines(self, ticker: str, max_count: int = 10) -> List[str]:
+    async def get_headlines(self, ticker: str, max_count: int = 10, session=None) -> List[str]:
         """
         Retrieves recent headlines for a symbol with in-memory caching.
         """
@@ -35,10 +35,10 @@ class NewsFetcher:
 
         headlines = []
         if self.finnhub_token:
-            headlines = await self._fetch_finnhub(ticker, max_count)
+            headlines = await self._fetch_finnhub(ticker, max_count, session)
             
         if not headlines and self.tiingo_token:
-            headlines = await self._fetch_tiingo(ticker, max_count)
+            headlines = await self._fetch_tiingo(ticker, max_count, session)
 
         # Update cache
         if headlines:
@@ -46,33 +46,48 @@ class NewsFetcher:
 
         return headlines
 
-    async def _fetch_finnhub(self, ticker: str, max_count: int) -> List[str]:
+    async def _fetch_finnhub(self, ticker: str, max_count: int, session=None) -> List[str]:
         today_str = date.today().strftime("%Y-%m-%d")
         yesterday_str = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
         url = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from={yesterday_str}&to={today_str}&token={self.finnhub_token}"
         
+        async def do_fetch(s):
+            async with s.get(url, timeout=5.0) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    headlines = [item.get("headline", "").strip() for item in data if item.get("headline")]
+                    return headlines[:max_count]
+                else:
+                    log.warning(f"Finnhub news API returned status {resp.status} for {ticker}")
+                    return []
+                    
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=5.0) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        headlines = [item.get("headline", "").strip() for item in data if item.get("headline")]
-                        return headlines[:max_count]
-                    else:
-                        log.warning(f"Finnhub news API returned status {resp.status} for {ticker}")
+            if session:
+                return await do_fetch(session)
+            else:
+                async with aiohttp.ClientSession() as s:
+                    return await do_fetch(s)
         except Exception as e:
             log.warning(f"Failed to fetch Finnhub news for {ticker}: {e}")
         return []
 
-    async def _fetch_tiingo(self, ticker: str, max_count: int) -> List[str]:
+    async def _fetch_tiingo(self, ticker: str, max_count: int, session=None) -> List[str]:
         url = f"https://api.tiingo.com/tiingo/news?tickers={ticker}&token={self.tiingo_token}"
+        
+        async def do_fetch(s):
+            async with s.get(url, timeout=5.0) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    headlines = [item.get("title", "").strip() for item in data if item.get("title")]
+                    return headlines[:max_count]
+                return []
+                
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=5.0) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        headlines = [item.get("title", "").strip() for item in data if item.get("title")]
-                        return headlines[:max_count]
+            if session:
+                return await do_fetch(session)
+            else:
+                async with aiohttp.ClientSession() as s:
+                    return await do_fetch(s)
         except Exception as e:
             log.warning(f"Failed to fetch Tiingo news for {ticker}: {e}")
         return []

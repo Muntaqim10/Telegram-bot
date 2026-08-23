@@ -13,6 +13,18 @@ class RiskManager:
         self.atr_multiplier = atr_multiplier
         self.min_profit_pct = min_profit_pct
         self.active_positions = {}
+        self.pending_evaluations = set()
+        
+    def mark_pending(self, ticker: str) -> bool:
+        """Atomically mark a ticker as currently evaluating to prevent double-entry race conditions."""
+        if ticker in self.active_positions or ticker in self.pending_evaluations:
+            return False
+        self.pending_evaluations.add(ticker)
+        return True
+        
+    def clear_pending(self, ticker: str):
+        """Release the evaluation lock for a ticker."""
+        self.pending_evaluations.discard(ticker)
 
     def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> float:
         """
