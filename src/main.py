@@ -69,7 +69,8 @@ class IntradayEngine:
             self.xgb_model,
             self.risk_manager,
             self.options_pricer,
-            self.alerts
+            self.alerts,
+            self.donchian_strategy
         )
 
     async def run_dynamic_scanner_loop(self):
@@ -168,6 +169,9 @@ class IntradayEngine:
 async def lifespan(app: FastAPI):
     log.info("[START] RallyHunter_v26 Intraday Engine initializing...")
     app.state.redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
+    
+    import src.database as db
+    db._init_db_sync()
     
     app.state.engine = IntradayEngine(app.state.redis)
     

@@ -5,13 +5,14 @@ from src.models.signal import TradeSignal
 log = logging.getLogger("rallyhunter.pipeline")
 
 class SignalPipeline:
-    def __init__(self, news_fetcher, sentiment_analyzer, xgb_model, risk_manager, options_pricer, alerts_gateway):
+    def __init__(self, news_fetcher, sentiment_analyzer, xgb_model, risk_manager, options_pricer, alerts, donchian_strategy=None):
         self.news_fetcher = news_fetcher
         self.sentiment_analyzer = sentiment_analyzer
         self.xgb_model = xgb_model
         self.risk_manager = risk_manager
         self.options_pricer = options_pricer
-        self.alerts = alerts_gateway
+        self.alerts = alerts
+        self.donchian_strategy = donchian_strategy
 
     async def process_signal(self, signal: dict, spy_vwap_ratio: float):
         """Passes the raw signal through AI filters before alerting."""
@@ -72,8 +73,27 @@ class SignalPipeline:
         log.info(f"[{ticker}] AI Filters: Sentiment={sent_score:.2f}, XGB={verdict} ({win_prob:.2f}), Conviction={conviction}")
         log.info(f"✅ {ticker} {direction} Conviction: {conviction}. Dispatching Alert.")
 
-        # Register in Risk Manager and get computed SL/TP
-        risk_levels = self.risk_manager.add_position(ticker, signal["entry_price"], initial_atr=1.5, direction=signal["direction"])
+        # Extract natively computed SL/TP if they exist (e.g., from Donchian signals)
+        stop_loss = signal.get("stop_loss")
+        take_profit = signal.get("take_profit")
+
+        if stop_loss is not None and take_profit is not None:
+            risk_levels = self.risk_manager.add_position(
+                ticker, signal["entry_price"], initial_atr=0.0, direction=signal["direction"],
+                stop_loss=stop_loss, take_profit=take_profit
+            )
+        else:
+            # ORB Signals: attempt to fetch cached real ATR, otherwise fallback with warning
+            cached_atr = None
+            if self.donchian_strategy and hasattr(self.donchian_strategy, "atr_cache"):
+                cached_atr = self.donchian_strategy.atr_cache.get(ticker)
+            
+            if cached_atr and not pd.isna(cached_atr):
+                risk_levels = self.risk_manager.add_position(ticker, signal["entry_price"], initial_atr=cached_atr, direction=signal["direction"])
+            else:
+                import logging
+                logging.getLogger("rallyhunter.pipeline").warning(f"[{ticker}] No cached daily ATR available. Falling back to default ATR=1.5")
+                risk_levels = self.risk_manager.add_position(ticker, signal["entry_price"], initial_atr=1.5, direction=signal["direction"])
 
         # 4. Options Pricing Check (Targeting ~30 days out expiration for short-term breakouts)
         now = datetime.now()

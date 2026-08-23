@@ -119,25 +119,28 @@ class RiskManager:
         except Exception as e:
             log.error(f"Failed to write trade outcome for {ticker}: {e}")
 
-    def add_position(self, ticker: str, entry_price: float, initial_atr: float, direction: str) -> dict:
+    def add_position(self, ticker: str, entry_price: float, initial_atr: float, direction: str, stop_loss: float = None, take_profit: float = None) -> dict:
         """
         Registers a new intraday runner position.
-        Returns the computed stop_loss and take_profit levels.
+        Returns the computed (or provided) stop_loss and take_profit levels.
         """
-        atr_distance = initial_atr * self.atr_multiplier
-
-        if direction == "Long":
-            initial_stop = entry_price - atr_distance
-            take_profit = entry_price + (atr_distance * 2.0)  # 2:1 reward-to-risk
+        if stop_loss is not None and take_profit is not None:
+            initial_stop = stop_loss
+            tp = take_profit
         else:
-            initial_stop = entry_price + atr_distance
-            take_profit = entry_price - (atr_distance * 2.0)
+            atr_distance = initial_atr * self.atr_multiplier
+            if direction == "Long":
+                initial_stop = entry_price - atr_distance
+                tp = entry_price + (atr_distance * 2.0)  # 2:1 reward-to-risk
+            else:
+                initial_stop = entry_price + atr_distance
+                tp = entry_price - (atr_distance * 2.0)
         
         self.active_positions[ticker] = {
             "entry_price": entry_price,
             "trailing_stop": initial_stop,
-            "take_profit": take_profit,
+            "take_profit": tp,
             "direction": direction
         }
-        log.info(f"Position added for {ticker} ({direction}) at {entry_price}. Stop: {initial_stop:.2f}, TP: {take_profit:.2f}")
-        return {"stop_loss": initial_stop, "take_profit": take_profit}
+        log.info(f"Position added for {ticker} ({direction}) at {entry_price}. Stop: {initial_stop:.2f}, TP: {tp:.2f}")
+        return {"stop_loss": initial_stop, "take_profit": tp}

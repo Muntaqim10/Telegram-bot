@@ -17,7 +17,7 @@ load_dotenv(dotenv_path=config_env)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("historical_downloader")
 
-TRADIER_TOKEN = os.getenv("TRADIER_ACCESS_TOKEN")
+TIINGO_TOKEN = os.getenv("TIINGO_API_KEY")
 
 # Major Indexes & Mag 7 Stocks
 MAG7_AND_INDEXES = [
@@ -33,38 +33,49 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 async def fetch_1m_data(session: aiohttp.ClientSession, ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
     """
-    Fetches 1-minute historical data from Tradier's timesales endpoint.
-    Note: Tradier restricts 1-minute data to approximately the last 30-35 days.
+    Fetches 1-minute historical data from Tiingo's IEX intraday endpoint.
+    Provides deep historical data (up to several years) for robust ML training.
     """
-    url = "https://api.tradier.com/v1/markets/timesales"
+    url = f"https://api.tiingo.com/iex/{ticker}/prices"
     headers = {
-        "Authorization": f"Bearer {TRADIER_TOKEN}",
-        "Accept": "application/json"
+        "Authorization": f"Token {TIINGO_TOKEN}",
+        "Content-Type": "application/json"
     }
     params = {
-        "symbol": ticker,
-        "interval": "1min",
-        "start": f"{start_date} 09:30",
-        "end": f"{end_date} 16:00"
+        "startDate": start_date,
+        "endDate": end_date,
+        "resampleFreq": "1min"
     }
     
     for attempt in range(1, 4):
         try:
-            async with session.get(url, headers=headers, params=params, timeout=10.0) as resp:
+            async with session.get(url, headers=headers, params=params, timeout=20.0) as resp:
                 if resp.status != 200:
                     log.warning(f"Failed to fetch data for {ticker}: status {resp.status}")
                     return pd.DataFrame()
                     
                 data = await resp.json()
-                series = data.get("series", {})
-                if not series or "data" not in series:
+                if not data:
                     log.warning(f"No 1-minute data returned for {ticker}.")
                     return pd.DataFrame()
                     
-                candles = series["data"]
-                df = pd.DataFrame(candles)
+                df = pd.DataFrame(data)
+                if df.empty:
+                    return df
+                
+                # Tiingo format: [{'date': '2023-01-03T14:30:00+00:00', 'open': ..., 'high': ..., 'low': ..., 'close': ..., 'volume': ...}]
+                df.rename(columns={'date': 'time'}, inplace=True)
                 df["time"] = pd.to_datetime(df["time"])
+                
+                # Convert to US/Eastern timezone to match live execution logic expectations
+                if df["time"].dt.tz is not None:
+                    df["time"] = df["time"].dt.tz_convert('US/Eastern').dt.tz_localize(None)
+                    
                 df.set_index("time", inplace=True)
+                
+                # Filter strictly to regular market hours (9:30 AM to 4:00 PM EST)
+                df = df.between_time("09:30", "16:00")
+                
                 return df
         except Exception as e:
             log.warning(f"Attempt {attempt}/3 failed to fetch 1m data for {ticker}: {e}")
@@ -73,13 +84,13 @@ async def fetch_1m_data(session: aiohttp.ClientSession, ticker: str, start_date:
     return pd.DataFrame()
 
 async def main():
-    if not TRADIER_TOKEN:
-        log.error("Missing TRADIER_ACCESS_TOKEN in environment.")
+    if not TIINGO_TOKEN:
+        log.error("Missing TIINGO_API_KEY in environment.")
         return
         
-    # Calculate the safest 25-day window for Tradier 1-minute timesales
+    # Tiingo allows deep historical fetch, we will grab 180 days (6 months)
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=25)
+    start_date = end_date - timedelta(days=180)
     
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = end_date.strftime("%Y-%m-%d")
@@ -93,14 +104,16 @@ async def main():
                 log.info(f"Using cached intraday CSV for {ticker}")
                 continue
                 
-            log.info(f"Fetching {ticker}...")
+            log.info(f"Fetching {ticker} (180 days)...")
             df = await fetch_1m_data(session, ticker, start_str, end_str)
             if not df.empty:
                 df.to_csv(file_path)
                 log.info(f"Saved {len(df)} rows for {ticker} to {file_path}")
+            else:
+                log.warning(f"No data saved for {ticker}.")
             
-            # Rate limiting safety
-            await asyncio.sleep(1.5)
+            # Rate limiting safety for Tiingo
+            await asyncio.sleep(1.0)
             
     log.info("Historical download complete.")
 

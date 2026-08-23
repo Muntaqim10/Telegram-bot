@@ -7,11 +7,11 @@ from typing import List
 
 log = logging.getLogger(__name__)
 
-class IntradayBacktester:
+class IntradayBacktesterV2:
     """
     Simulates the live event-driven engine using historical 1-minute data to 
-    identify setups that resulted in successful >5% all-day trends.
-    Generates a labeled dataset for XGBoost training.
+    identify setups that resulted in successful trends.
+    Uses path-dependent 5-day evaluation with daily ATR calculations.
     """
     def __init__(self, engine):
         self.engine = engine # Instance of IntradayEngine
@@ -32,28 +32,40 @@ class IntradayBacktester:
         Feeds historical data into the live strategy engine.
         Tracks the success of breakouts to generate a training set.
         """
-        log.info("Loading historical intraday data...")
+        from src.strategy.donchian_daily import DonchianSwingStrategy
+        
+        log.info("Loading historical intraday data for V2 path-dependent testing...")
         historical_data = self.load_historical_data(data_dir)
+        donchian = DonchianSwingStrategy("dummy_token")
         
         for ticker, df in historical_data.items():
-            log.info(f"Backtesting {ticker}...")
+            log.info(f"Backtesting {ticker} (V2)...")
+            
+            # Resample 1m data to daily to compute ATR_14
+            agg_dict = {
+                'open': 'first',
+                'high': 'max',
+                'low': 'min',
+                'close': 'last'
+            }
+            if 'volume' in df.columns:
+                agg_dict['volume'] = 'sum'
+                
+            daily_df = df.resample('D').agg(agg_dict).dropna()
+            
+            # Compute indicators (this will add ATR_14)
+            daily_df = donchian.compute_indicators(daily_df)
             
             # Group data by trading day
             days = df.groupby(df.index.date)
             
-            for date, daily_df in days:
+            for date, daily_tick_df in days:
                 self.engine.orb_strategy.reset_daily()
                 signal_fired = False
-                signal_entry_price = 0.0
-                signal_direction = ""
                 
-                # We need features at the exact moment of the breakout
                 features_at_entry = {}
                 
-                stop_loss = 0.0
-                take_profit = 0.0
-                
-                for timestamp, row in daily_df.iterrows():
+                for timestamp, row in daily_tick_df.iterrows():
                     price = row["close"]
                     volume = row.get("volume", 0)
                     
@@ -85,19 +97,6 @@ class IntradayBacktester:
                             spy_vwap = spy_state.get("vwap")
                             spy_corr = spy_state.get("last_price") / spy_vwap if spy_vwap else 1.0
                             
-                            # Establish SL/TP
-                            current_atr = 1.5
-                            if ticker in self.engine.orb_strategy.intraday_state and "atr" in self.engine.orb_strategy.intraday_state[ticker]:
-                                current_atr = self.engine.orb_strategy.intraday_state[ticker]["atr"]
-                            
-                            atr_dist = current_atr * self.engine.risk_manager.atr_multiplier
-                            if signal_direction == "Long":
-                                stop_loss = signal_entry_price - atr_dist
-                                take_profit = signal_entry_price + (atr_dist * 2.0)
-                            else:
-                                stop_loss = signal_entry_price + atr_dist
-                                take_profit = signal_entry_price - (atr_dist * 2.0)
-                            
                             features_at_entry = {
                                 "ticker": ticker,
                                 "date": date,
@@ -113,51 +112,73 @@ class IntradayBacktester:
                                 "hod_ratio": signal.get("hod_ratio", 1.0),
                                 "lod_ratio": signal.get("lod_ratio", 1.0)
                             }
-                    else:
-                        # Path-aware evaluation
-                        if signal_direction == "Long":
-                            if price <= stop_loss:
-                                features_at_entry["target"] = 0
-                                features_at_entry["max_gain"] = (price - signal_entry_price) / signal_entry_price
-                                self.training_data.append(features_at_entry)
-                                break
-                            elif price >= take_profit:
-                                features_at_entry["target"] = 1
-                                features_at_entry["max_gain"] = (price - signal_entry_price) / signal_entry_price
-                                self.training_data.append(features_at_entry)
-                                break
-                        else: # Short
-                            if price >= stop_loss:
-                                features_at_entry["target"] = 0
-                                features_at_entry["max_gain"] = (signal_entry_price - price) / signal_entry_price
-                                self.training_data.append(features_at_entry)
-                                break
-                            elif price <= take_profit:
-                                features_at_entry["target"] = 1
-                                features_at_entry["max_gain"] = (signal_entry_price - price) / signal_entry_price
-                                self.training_data.append(features_at_entry)
-                                break
-                else:
-                    # End of Day Evaluation if SL/TP never hit
-                    if signal_fired and "target" not in features_at_entry:
-                        features_at_entry["target"] = 0 # Default to 0 if TP not hit
-                        if signal_direction == "Long":
-                            features_at_entry["max_gain"] = (price - signal_entry_price) / signal_entry_price
-                        else:
-                            features_at_entry["max_gain"] = (signal_entry_price - price) / signal_entry_price
-                        self.training_data.append(features_at_entry)
-                    
-        log.info(f"Backtest complete. Generated {len(self.training_data)} training samples.")
+                            
+                            # Lookup previous day's ATR (to prevent lookahead bias)
+                            past_daily = daily_df.loc[:date]
+                            if len(past_daily) > 1:
+                                prev_day = past_daily.iloc[-2]
+                                current_atr = prev_day.get("ATR_14", 1.5)
+                            else:
+                                current_atr = 1.5
+                            
+                            if pd.isna(current_atr) or current_atr <= 0:
+                                current_atr = 1.5
+                                
+                            atr_dist = current_atr * self.engine.risk_manager.atr_multiplier
+                            if signal_direction == "Long":
+                                stop_loss = signal_entry_price - atr_dist
+                                take_profit = signal_entry_price + (atr_dist * 2.0)
+                            else:
+                                stop_loss = signal_entry_price + atr_dist
+                                take_profit = signal_entry_price - (atr_dist * 2.0)
+                                
+                            # Path Evaluation over 5 forward trading days
+                            future_df = df.loc[timestamp:]
+                            unique_days = pd.Series(future_df.index.date).unique()
+                            if len(unique_days) > 5:
+                                end_date = unique_days[5]
+                                future_df = future_df.loc[:str(end_date)]
+                                
+                            target = 0
+                            max_gain = 0.0
+                            for future_ts, future_row in future_df.iterrows():
+                                future_price = future_row["close"]
+                                
+                                if signal_direction == "Long":
+                                    gain = (future_price - signal_entry_price) / signal_entry_price
+                                    if gain > max_gain: max_gain = gain
+                                    if future_price <= stop_loss:
+                                        target = 0
+                                        break
+                                    elif future_price >= take_profit:
+                                        target = 1
+                                        break
+                                else:
+                                    gain = (signal_entry_price - future_price) / signal_entry_price
+                                    if gain > max_gain: max_gain = gain
+                                    if future_price >= stop_loss:
+                                        target = 0
+                                        break
+                                    elif future_price <= take_profit:
+                                        target = 1
+                                        break
+                                        
+                            features_at_entry["target"] = target
+                            features_at_entry["max_gain"] = max_gain
+                            self.training_data.append(features_at_entry)
+                            break # Move to next day (only evaluate the first signal per day)
+                            
+        log.info(f"Backtest V2 complete. Generated {len(self.training_data)} training samples.")
         
         # Save to parquet for ML training
         if self.training_data:
             out_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/"))
             os.makedirs(out_dir, exist_ok=True)
-            out_path = os.path.join(out_dir, "ml_training_data.parquet")
+            out_path = os.path.join(out_dir, "ml_training_data_v2.parquet")
             
             tdf = pd.DataFrame(self.training_data)
             tdf.to_parquet(out_path)
-            log.info(f"Training dataset saved to {out_path} (Success Rate: {tdf['target'].mean()*100:.1f}%)")
+            log.info(f"V2 Training dataset saved to {out_path} (Success Rate: {tdf['target'].mean()*100:.1f}%)")
 
 if __name__ == "__main__":
     import sys
@@ -170,7 +191,7 @@ if __name__ == "__main__":
     async def run():
         redis = await aioredis.from_url("redis://localhost", decode_responses=True)
         engine = IntradayEngine(redis)
-        backtester = IntradayBacktester(engine)
+        backtester = IntradayBacktesterV2(engine)
         
         data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/intraday/"))
         await backtester.run_simulation(data_dir)

@@ -43,7 +43,7 @@ def _migrate_csv_data(conn):
                     ))
             print("[DB] Migrated live trade log from CSV to SQLite successfully.")
         except Exception as e:
-            print(f"[DB] Error migrating live CSV: {e}")
+            print(f"[DB _migrate_csv_data] Error migrating live CSV to trade_log table: {e}")
 
     # 2. Migrate Archived Trades
     cursor.execute("SELECT COUNT(*) FROM trade_log_archive")
@@ -69,7 +69,7 @@ def _migrate_csv_data(conn):
                     ))
             print("[DB] Migrated archived trade log from CSV to SQLite successfully.")
         except Exception as e:
-            print(f"[DB] Error migrating archived CSV: {e}")
+            print(f"[DB _migrate_csv_data] Error migrating archived CSV to trade_log_archive table: {e}")
             
     conn.commit()
 
@@ -285,6 +285,3 @@ async def clear_live_trades():
 async def clear_archived_trades():
     """Clear all trades from the archived trade log."""
     await asyncio.to_thread(_clear_table_sync, "trade_log_archive")
-
-# Run database table initialization immediately on import
-_init_db_sync()

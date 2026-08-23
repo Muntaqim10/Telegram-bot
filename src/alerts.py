@@ -56,7 +56,7 @@ class AlertGateway:
                     if r.status != 200:
                         success = False
             except Exception as e:
-                log.error("Failed to send telegram to %s: %s", cid, e)
+                log.error("AlertGateway._send_telegram failed to send message to chat_id %s: %s", cid, e)
                 success = False
         return success
 
@@ -105,14 +105,14 @@ class AlertGateway:
                                 await self._send_telegram("⚠️ <b>/scan</b> is deprecated in the new event-driven architecture.")
                                     
                 except Exception as e: 
-                    log.error("Telegram updates polling error: %s", e)
+                    log.error("AlertGateway.start_listener encountered Telegram updates polling error: %s", e)
                     await asyncio.sleep(5)
 
     async def dispatch_high_conviction(self, signal: Any, force_send: bool = False, suppress_telegram: bool = False) -> bool:
         """Dispatches an institutional-grade signal and journals to SQLite."""
         # 1. Senior Deduplication
         quiet_seconds = int(os.getenv("QUIET_MODE_SECONDS", "3600"))
-        dedup_key = f"alert_dedup:{signal.ticker}"
+        dedup_key = f"alert_dedup:{signal.ticker}:{signal.signal_direction}"
         if not force_send:
             if self._redis:
                 try:
@@ -120,7 +120,7 @@ class AlertGateway:
                         return False
                     await self._redis.setex(dedup_key, quiet_seconds, "1")
                 except Exception as e:
-                    log.warning("Redis duplicate check failed: %s", e)
+                    log.warning("AlertGateway.dispatch_high_conviction failed Redis deduplication check for %s: %s", signal.ticker, e)
             else:
                 log.warning("Redis not available, deduplication disabled.")
         
@@ -144,7 +144,7 @@ class AlertGateway:
             }
             await add_trade(trade_data)
         except Exception as e:
-            log.error("Journaling error: %s", e)
+            log.error("AlertGateway.dispatch_high_conviction failed to journal trade for %s to SQLite: %s", signal.ticker, e)
 
         # 3. Mobile-Optimized Premium Alert Template
         msg = format_telegram_alert(signal)

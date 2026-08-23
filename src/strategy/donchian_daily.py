@@ -28,6 +28,7 @@ class DonchianSwingStrategy:
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/json"
         }
+        self.atr_cache = {}
 
     async def fetch_daily_bars(self, ticker: str, lookback_days: int = 80) -> pd.DataFrame:
         """Fetch daily OHLCV bars from Tradier."""
@@ -193,6 +194,7 @@ class DonchianSwingStrategy:
                 df = self.compute_indicators(df)
                 if df.empty:
                     continue
+                self.atr_cache[ticker] = df["ATR_14"].iloc[-1]
                 signals = self.evaluate_signals(df, ticker)
                 if signals:
                     for sig in signals:
