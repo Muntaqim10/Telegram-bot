@@ -23,6 +23,8 @@ class ORBStrategy:
         
     def _get_market_session(self, timestamp: pd.Timestamp) -> str:
         """Determines market session: PREMARKET, RTH (Regular Trading Hours), or POSTMARKET."""
+        if timestamp.dayofweek >= 5:
+            return "CLOSED"
         hour = timestamp.hour
         minute = timestamp.minute
         if (hour < 9) or (hour == 9 and minute < 30):
@@ -44,6 +46,9 @@ class ORBStrategy:
             return None
 
         session = self._get_market_session(timestamp)
+        
+        if session == "CLOSED":
+            return None
         
         # Maintain overall state structure (4-Timeframe Confluence Engine)
         state = self.intraday_state.setdefault(ticker, {

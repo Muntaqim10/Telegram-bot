@@ -20,6 +20,8 @@ class ExtendedHoursScanner:
         self.triggered_tickers = {}
         
     def _get_market_session(self, timestamp: pd.Timestamp) -> str:
+        if timestamp.dayofweek >= 5:
+            return "CLOSED"
         hour = timestamp.hour
         minute = timestamp.minute
         if (hour < 9) or (hour == 9 and minute < 30):
@@ -62,6 +64,9 @@ class ExtendedHoursScanner:
 
         session = self._get_market_session(current_timestamp)
 
+        if session == "CLOSED":
+            return
+
         state = self.ticker_state.setdefault(ticker, {
             "prev_close": price,
             "cum_vol": 0.0,
@@ -86,7 +91,7 @@ class ExtendedHoursScanner:
         Periodically polled by the async loop to yield alerts.
         """
         session = self._get_market_session(current_timestamp)
-        if session == "RTH":
+        if session in ("RTH", "CLOSED"):
             return [] # We only alert during extended hours
 
         today_str = current_timestamp.strftime("%Y-%m-%d")
