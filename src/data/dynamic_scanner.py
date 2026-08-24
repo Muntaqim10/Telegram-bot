@@ -9,7 +9,7 @@ log = logging.getLogger(__name__)
 # Broad pool of dynamic candidates optimized for HIGH OPTIONS LEVERAGE (High Beta, High IV, Massive Gamma potential)
 CANDIDATE_POOL = [
     # Core Indexes & Mag 7
-    "SPY", "QQQ", "IWM", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
+    "SPY", "QQQ", "IWM", "GLD", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
     # High-Beta Semiconductors & Hardware
     "AMD", "AVGO", "SMCI", "ARM", "MU", "LRCX", "AMAT", "DELL", "ALAB", "INTC", "TXN",
     # Crypto Proxies & Ultra-High Beta
@@ -75,7 +75,7 @@ class DynamicTickerScanner:
                         dollar_vol = vol * last_price
 
                         # Always include core major indexes & Mag 7
-                        is_core = sym in ["SPY", "QQQ", "IWM", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AMD"]
+                        is_core = sym in ["SPY", "QQQ", "IWM", "GLD", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AMD"]
                         
                         score = (vol_ratio * 2.0) + (dollar_vol / 1e8)
                         if is_core:

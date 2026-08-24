@@ -44,7 +44,8 @@ async def fetch_1m_data(session: aiohttp.ClientSession, ticker: str, start_date:
     params = {
         "startDate": start_date,
         "endDate": end_date,
-        "resampleFreq": "1min"
+        "resampleFreq": "1min",
+        "columns": "open,high,low,close,volume"
     }
     
     for attempt in range(1, 4):
