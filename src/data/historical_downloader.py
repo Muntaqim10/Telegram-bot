@@ -35,53 +35,67 @@ async def fetch_1m_data(session: aiohttp.ClientSession, ticker: str, start_date:
     """
     Fetches 1-minute historical data from Tiingo's IEX intraday endpoint.
     Provides deep historical data (up to several years) for robust ML training.
+    Uses chunked requests (20 days at a time) to bypass Tiingo's 10,000 row limit.
     """
     url = f"https://api.tiingo.com/iex/{ticker}/prices"
     headers = {
         "Authorization": f"Token {TIINGO_TOKEN}",
         "Content-Type": "application/json"
     }
-    params = {
-        "startDate": start_date,
-        "endDate": end_date,
-        "resampleFreq": "1min",
-        "columns": "open,high,low,close,volume"
-    }
     
-    for attempt in range(1, 4):
-        try:
-            async with session.get(url, headers=headers, params=params, timeout=20.0) as resp:
-                if resp.status != 200:
-                    log.warning(f"Failed to fetch data for {ticker}: status {resp.status}")
-                    return pd.DataFrame()
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    
+    all_dfs = []
+    current_start = start_dt
+    
+    while current_start <= end_dt:
+        current_end = min(current_start + timedelta(days=20), end_dt)
+        
+        params = {
+            "startDate": current_start.strftime("%Y-%m-%d"),
+            "endDate": current_end.strftime("%Y-%m-%d"),
+            "resampleFreq": "1min",
+            "columns": "open,high,low,close,volume"
+        }
+        
+        chunk_success = False
+        for attempt in range(1, 4):
+            try:
+                async with session.get(url, headers=headers, params=params, timeout=20.0) as resp:
+                    if resp.status != 200:
+                        log.warning(f"Failed to fetch chunk for {ticker} ({current_start.date()}): status {resp.status}")
+                        break
+                        
+                    data = await resp.json()
+                    if data:
+                        df = pd.DataFrame(data)
+                        if not df.empty:
+                            df.rename(columns={'date': 'time'}, inplace=True)
+                            df["time"] = pd.to_datetime(df["time"])
+                            if df["time"].dt.tz is not None:
+                                df["time"] = df["time"].dt.tz_convert('US/Eastern').dt.tz_localize(None)
+                            df.set_index("time", inplace=True)
+                            df = df.between_time("09:30", "16:00")
+                            all_dfs.append(df)
                     
-                data = await resp.json()
-                if not data:
-                    log.warning(f"No 1-minute data returned for {ticker}.")
-                    return pd.DataFrame()
+                    chunk_success = True
+                    break
+            except Exception as e:
+                log.warning(f"Attempt {attempt}/3 failed to fetch 1m data for {ticker}: {e}")
+                if attempt < 3:
+                    await asyncio.sleep(2)
                     
-                df = pd.DataFrame(data)
-                if df.empty:
-                    return df
-                
-                # Tiingo format: [{'date': '2023-01-03T14:30:00+00:00', 'open': ..., 'high': ..., 'low': ..., 'close': ..., 'volume': ...}]
-                df.rename(columns={'date': 'time'}, inplace=True)
-                df["time"] = pd.to_datetime(df["time"])
-                
-                # Convert to US/Eastern timezone to match live execution logic expectations
-                if df["time"].dt.tz is not None:
-                    df["time"] = df["time"].dt.tz_convert('US/Eastern').dt.tz_localize(None)
-                    
-                df.set_index("time", inplace=True)
-                
-                # Filter strictly to regular market hours (9:30 AM to 4:00 PM EST)
-                df = df.between_time("09:30", "16:00")
-                
-                return df
-        except Exception as e:
-            log.warning(f"Attempt {attempt}/3 failed to fetch 1m data for {ticker}: {e}")
-            if attempt < 3:
-                await asyncio.sleep(2)
+        # Advance by 21 days so we don't overlap the end date of the previous chunk
+        current_start = current_end + timedelta(days=1)
+        await asyncio.sleep(0.5) # Rate limit between chunks
+        
+    if all_dfs:
+        final_df = pd.concat(all_dfs)
+        final_df = final_df[~final_df.index.duplicated(keep='first')]
+        final_df.sort_index(inplace=True)
+        return final_df
+        
     return pd.DataFrame()
 
 async def main():
