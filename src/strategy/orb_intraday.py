@@ -90,6 +90,14 @@ class ORBStrategy:
             alpha21 = 2 / (21 + 1)
             state["ema9"] = (price * alpha9) + (state["ema9"] * (1 - alpha9))
             state["ema21"] = (price * alpha21) + (state["ema21"] * (1 - alpha21))
+            
+            # Volume EMA (20-period)
+            alpha_vol = 2 / (20 + 1)
+            if "ema_vol" not in state:
+                state["ema_vol"] = volume
+            else:
+                state["ema_vol"] = (volume * alpha_vol) + (state["ema_vol"] * (1 - alpha_vol))
+                
             state["last_minute"] = timestamp.minute
 
         # Timeframe 2 (5-Minute Structure): Update 5m EMAs every 5 minutes
@@ -147,10 +155,10 @@ class ORBStrategy:
                 if last_time and (timestamp - last_time).total_seconds() < self.quiet_seconds:
                     return None # Per-ticker quiet period cool-off window
 
-            # Volume Surge Confirmation: require current tick volume >= 1.5x the average ORB-window volume
-            avg_orb_vol = (orb["orb_vol_sum"] / orb["orb_tick_count"]) if orb.get("orb_tick_count", 0) > 0 else 0.0
-            has_volume_surge = volume >= (avg_orb_vol * self.vol_surge_multiplier) if avg_orb_vol > 0 else True
-            relative_volume = (volume / avg_orb_vol) if avg_orb_vol > 0 else 1.0
+            # Volume Surge Confirmation: require current tick volume >= 1.5x the 20-minute Volume EMA
+            avg_rolling_vol = state.get("ema_vol", 0.0)
+            has_volume_surge = volume >= (avg_rolling_vol * self.vol_surge_multiplier) if avg_rolling_vol > 0 else True
+            relative_volume = (volume / avg_rolling_vol) if avg_rolling_vol > 0 else 1.0
                 
             signal_data = {
                 "ticker": ticker,

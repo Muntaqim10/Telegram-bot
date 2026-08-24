@@ -2,7 +2,8 @@ import aiohttp
 import logging
 import asyncio
 import time
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+from src.data.iv_history import IVHistoryTracker
 
 log = logging.getLogger(__name__)
 
@@ -19,10 +20,12 @@ class OptionsPricer:
             "Accept": "application/json"
         }
         self._chain_cache = {}
+        self.iv_tracker = IVHistoryTracker()
         
     async def find_optimal_contract(
         self, ticker: str, expiration: str, target_strike: float, 
-        option_type: str, take_profit: float, session=None
+        option_type: str, take_profit: float, session=None,
+        days_since_earnings: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Scans the chain for an optimal contract near the target strike that passes:
@@ -161,6 +164,7 @@ class OptionsPricer:
 
             result["gex_target_strike"] = best_gex_strike
             result["gex_value"] = max_gex
+            result["gex_confidence"] = "HIGH" if (days_since_earnings is not None and 0 <= days_since_earnings <= 3) else "STANDARD"
             result["net_gex"] = total_call_gex - total_put_gex
             result["call_dollar_flow"] = total_call_dollar_flow
             result["put_dollar_flow"] = total_put_dollar_flow
@@ -273,14 +277,21 @@ class OptionsPricer:
                 result["delta"] = greeks.get("delta", 0.0)
                 result["theta"] = greeks.get("theta", 0.0)
                 result["iv"] = greeks.get("smv_vol", greeks.get("implied_volatility", 0.0))
+                
+            self.iv_tracker.record_iv(ticker, result["iv"])
+            iv_rank = self.iv_tracker.get_iv_rank(ticker, result["iv"])
             
             # Unusual Flow Heuristic (e.g. Volume is 3x Open Interest)
             volume = final_contract.get("volume", 0)
             open_interest = final_contract.get("open_interest", 0)
             dollar_flow = volume * midpoint * 100
             
+            MIN_ABSOLUTE_VOLUME_FOR_WHALE = 100
             is_unusual_flow = False
-            if open_interest > 0 and volume > (open_interest * 3) and dollar_flow > 50000:
+            if (open_interest > 0 
+                and volume > (open_interest * 3) 
+                and volume >= MIN_ABSOLUTE_VOLUME_FOR_WHALE
+                and dollar_flow > 50000):
                 is_unusual_flow = True
             
             result["is_whale"] = is_unusual_flow
@@ -293,15 +304,29 @@ class OptionsPricer:
             
             # Evaluation Logic for contracts that passed the hard gates
             if result["verdict"] == "UNKNOWN": # i.e. it wasn't flagged as UNTRADEABLE AT SIZE
-                if result["iv"] > 1.20:
-                    result["verdict"] = "OVERPRICED - HIGH IV"
-                    result["reason"] = f"IV is bloated at {result['iv']*100:.1f}%. High risk of IV Crush."
-                elif result["premium_ratio"] < 0.10 and midpoint > 1.0:
-                    result["verdict"] = "POOR VALUE"
-                    result["reason"] = f"Paying ${midpoint:.2f} for only {result['delta']:.2f} Delta."
+                if iv_rank is not None:
+                    result["iv_rank"] = iv_rank
+                    if iv_rank > 80:
+                        result["verdict"] = "OVERPRICED - HIGH IV RANK"
+                        result["reason"] = f"IV Rank is {iv_rank:.0f}/100 for this ticker -- historically expensive."
+                    elif result["premium_ratio"] < 0.10 and midpoint > 1.0:
+                        result["verdict"] = "POOR VALUE"
+                        result["reason"] = f"Paying ${midpoint:.2f} for only {result['delta']:.2f} Delta."
+                    else:
+                        result["verdict"] = "FAIR VALUE"
+                        result["reason"] = "Pricing, liquidity, and breakeven are optimal."
                 else:
-                    result["verdict"] = "FAIR VALUE"
-                    result["reason"] = "Pricing, liquidity, and breakeven are optimal."
+                    # Not enough IV history yet for this ticker -- fall back to the 
+                    # old absolute threshold rather than skip the check entirely
+                    if result["iv"] > 1.20:
+                        result["verdict"] = "OVERPRICED - HIGH IV"
+                        result["reason"] = f"IV is bloated at {result['iv']*100:.1f}%. High risk of IV Crush."
+                    elif result["premium_ratio"] < 0.10 and midpoint > 1.0:
+                        result["verdict"] = "POOR VALUE"
+                        result["reason"] = f"Paying ${midpoint:.2f} for only {result['delta']:.2f} Delta."
+                    else:
+                        result["verdict"] = "FAIR VALUE"
+                        result["reason"] = "Pricing, liquidity, and breakeven are optimal."
                 
             return result
                 

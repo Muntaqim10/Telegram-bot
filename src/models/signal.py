@@ -51,3 +51,8 @@ class TradeSignal:
     timeframe_target: str = "Intraday"
     pricing_verdict: str = ""
     pricing_reason: str = ""
+    
+    # Earnings risk
+    earnings_risk: bool = False
+    earnings_date: Optional[str] = None
+    gex_confidence: str = "STANDARD"

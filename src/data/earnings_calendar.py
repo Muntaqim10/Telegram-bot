@@ -23,28 +23,57 @@ class EarningsCalendar:
         Returns a "YYYY-MM-DD" string or None.
         """
         now = datetime.now()
+        cache_key = (ticker, "next")
         
         # Check cache
-        if ticker in self._cache:
-            cached = self._cache[ticker]
+        if cache_key in self._cache:
+            cached = self._cache[cache_key]
             age = (now - cached["fetched_at"]).total_seconds()
             if age < self.cache_ttl:
-                log.debug(f"Earnings cache hit for {ticker}. Age: {age:.1f}s")
-                return cached["next_earnings_date"]
+                log.debug(f"Earnings cache hit for {ticker} (next). Age: {age:.1f}s")
+                return cached["date"]
 
         next_date = None
         if self.finnhub_token:
-            next_date = await self._fetch_finnhub(ticker, session)
+            next_date = await self._fetch_finnhub(ticker, "next", session)
             
         # Update cache (we cache even if None to prevent hammering the API for missing data)
-        self._cache[ticker] = {"next_earnings_date": next_date, "fetched_at": now}
+        self._cache[cache_key] = {"date": next_date, "fetched_at": now}
 
         return next_date
 
-    async def _fetch_finnhub(self, ticker: str, session: aiohttp.ClientSession = None) -> Optional[str]:
+    async def get_last_earnings_date(self, ticker: str, session: aiohttp.ClientSession = None) -> Optional[str]:
+        """
+        Retrieves the most recent past earnings date for a symbol.
+        Returns a "YYYY-MM-DD" string or None.
+        """
+        now = datetime.now()
+        cache_key = (ticker, "last")
+        
+        # Check cache
+        if cache_key in self._cache:
+            cached = self._cache[cache_key]
+            age = (now - cached["fetched_at"]).total_seconds()
+            if age < self.cache_ttl:
+                log.debug(f"Earnings cache hit for {ticker} (last). Age: {age:.1f}s")
+                return cached["date"]
+
+        last_date = None
+        if self.finnhub_token:
+            last_date = await self._fetch_finnhub(ticker, "last", session)
+            
+        self._cache[cache_key] = {"date": last_date, "fetched_at": now}
+
+        return last_date
+
+    async def _fetch_finnhub(self, ticker: str, direction: str, session: aiohttp.ClientSession = None) -> Optional[str]:
         today = datetime.now()
-        from_str = today.strftime("%Y-%m-%d")
-        to_str = (today + timedelta(days=45)).strftime("%Y-%m-%d")
+        if direction == "next":
+            from_str = today.strftime("%Y-%m-%d")
+            to_str = (today + timedelta(days=45)).strftime("%Y-%m-%d")
+        else:
+            from_str = (today - timedelta(days=45)).strftime("%Y-%m-%d")
+            to_str = today.strftime("%Y-%m-%d")
         
         url = "https://finnhub.io/api/v1/calendar/earnings"
         params = {
@@ -60,17 +89,21 @@ class EarningsCalendar:
                     data = await resp.json()
                     calendar = data.get("earningsCalendar", [])
                     
-                    # Filter for dates today or later
-                    future_dates = []
+                    # Filter for dates based on direction
+                    target_dates = []
                     for item in calendar:
                         date_str = item.get("date")
-                        if date_str and date_str >= from_str:
-                            future_dates.append(date_str)
+                        if not date_str:
+                            continue
+                        if direction == "next" and date_str >= from_str:
+                            target_dates.append(date_str)
+                        elif direction == "last" and date_str <= to_str:
+                            target_dates.append(date_str)
                             
-                    if future_dates:
-                        # Sort and return the earliest upcoming date
-                        future_dates.sort()
-                        return future_dates[0]
+                    if target_dates:
+                        # Sort and return the nearest date
+                        target_dates.sort(reverse=(direction == "last"))
+                        return target_dates[0]
                 else:
                     log.warning(f"Finnhub earnings API returned status {resp.status} for {ticker}")
             return None
@@ -96,6 +129,21 @@ class EarningsCalendar:
             target_date = datetime.strptime(next_earnings_date, "%Y-%m-%d").date()
             today = date.today()
             delta = target_date - today
+            return delta.days
+        except ValueError:
+            return None
+
+    def days_since_earnings(self, last_earnings_date: Optional[str]) -> Optional[int]:
+        """
+        Helper to return the integer days from the last earnings date until today.
+        """
+        if not last_earnings_date:
+            return None
+            
+        try:
+            target_date = datetime.strptime(last_earnings_date, "%Y-%m-%d").date()
+            today = date.today()
+            delta = today - target_date
             return delta.days
         except ValueError:
             return None

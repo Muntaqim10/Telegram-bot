@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, Any
 from src.models.signal import TradeSignal
+from src.data.earnings_calendar import EarningsCalendar
 
 log = logging.getLogger("rallyhunter.pipeline")
 
@@ -14,6 +15,7 @@ class SignalPipeline:
         self.options_pricer = options_pricer
         self.alerts = alerts
         self.donchian_strategy = donchian_strategy
+        self.earnings_calendar = EarningsCalendar()
 
     async def process_signal(self, signal: Dict[str, Any], spy_vwap_ratio: float = 1.0, session=None):
         """Passes the raw signal through AI filters before alerting."""
@@ -115,13 +117,23 @@ class SignalPipeline:
 
         opt_type = "put" if direction == "Short" else "call"
 
+        next_earnings = await self.earnings_calendar.get_next_earnings_date(ticker, session=session)
+        days_to_earnings = self.earnings_calendar.days_until_earnings(next_earnings)
+        earnings_in_window = (
+            days_to_earnings is not None and 0 <= days_to_earnings <= 32
+        )
+        
+        last_earnings = await self.earnings_calendar.get_last_earnings_date(ticker, session=session)
+        days_since = self.earnings_calendar.days_since_earnings(last_earnings)
+
         pricing_data = await self.options_pricer.find_optimal_contract(
             ticker=ticker,
             expiration=expiration,
             target_strike=target_strike,
             option_type=opt_type,
             take_profit=risk_levels["take_profit"],
-            session=session
+            session=session,
+            days_since_earnings=days_since
         )
         
         # Pull the actual chosen strike, which might differ from target_strike due to affordability/liquidity gates
@@ -192,7 +204,10 @@ class SignalPipeline:
             option_type=opt_type.upper(),
             intraday_option_type=opt_type.upper(),
             pricing_verdict=pricing_data.get("verdict", ""),
-            pricing_reason=pricing_data.get("reason", "")
+            pricing_reason=pricing_data.get("reason", ""),
+            earnings_risk=earnings_in_window,
+            earnings_date=next_earnings,
+            gex_confidence=pricing_data.get("gex_confidence", "STANDARD")
         )
 
         await self.alerts.dispatch_high_conviction(trade_signal)

@@ -70,6 +70,7 @@ def format_telegram_alert(signal: TradeSignal) -> str:
     vwap_label = f"+{vwap_pct:.2f}% above" if vwap_pct >= 0 else f"{vwap_pct:.2f}% below"
     
     warning_line = f"{signal.warning_tag}\n" if signal.warning_tag else ""
+    earnings_line = f"⚠️ <b>Earnings Risk:</b> <code>{signal.earnings_date}</code> falls within this option's holding window\n" if getattr(signal, "earnings_risk", False) else ""
     
     flow_line = f"💵 <b>Options Flow:</b> <code>{signal.flow_bias}</code> (${signal.call_dollar_flow:,.0f} Calls / ${signal.put_dollar_flow:,.0f} Puts)\n"
     
@@ -78,6 +79,7 @@ def format_telegram_alert(signal: TradeSignal) -> str:
         f"Asset: {ticker_code} ({action_label})\n"
         f"✅ <b>STATUS:</b> CONFIRMED\n"
         f"{warning_line}\n"
+        f"{earnings_line}"
         f"{options_lines}"
         f"🧠 <b>Confluence:</b> <i>{signal.context_score}</i>\n"
         f"📊 <b>Conviction:</b> {signal.conviction} (<code>{int(signal.win_probability * 100)}%</code>)\n\n"
@@ -104,5 +106,8 @@ def format_telegram_alert(signal: TradeSignal) -> str:
     
     if signal.strategy_suggestion:
         msg += f"\n\n{signal.strategy_suggestion}"
+        
+    if getattr(signal, "gex_confidence", "STANDARD") == "HIGH":
+        msg += "\n\n📌 <b>Post-earnings gamma compression window</b> — strike selection has stronger historical backing here"
         
     return msg
