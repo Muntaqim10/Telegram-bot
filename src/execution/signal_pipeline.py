@@ -77,6 +77,12 @@ class SignalPipeline:
             conviction = "🔴 LOW"
 
         log.info(f"[{ticker}] AI Filters: Sentiment={sent_score:.2f}, XGB={verdict} ({win_prob:.2f}), Conviction={conviction}")
+        
+        # Enforce Fakeout Filter: Only high conviction (>=0.75) and CONCORDANT
+        if win_prob < 0.75 or verdict != "CONCORDANT":
+            log.warning(f"[{ticker}] Alert suppressed by Fakeout Filter: XGB={verdict} ({win_prob:.2f}). Conviction: {conviction}")
+            return
+            
         log.info(f"✅ {ticker} {direction} Conviction: {conviction}. Dispatching Alert.")
 
         # Extract natively computed SL/TP if they exist (e.g., from Donchian signals)
@@ -102,18 +108,14 @@ class SignalPipeline:
                 logging.getLogger("rallyhunter.pipeline").warning(f"[{ticker}] No cached daily ATR available. Falling back to default ATR=1.5")
                 risk_levels = self.risk_manager.add_position(ticker, signal["entry_price"], initial_atr=1.5, direction=signal["direction"])
 
-        # 4. Options Pricing Check (Targeting ~30 days out expiration for short-term breakouts)
+        # 4. Options Pricing Check (Targeting ~45 days out expiration for short-term breakouts)
         now = datetime.now()
-        target_date = now + timedelta(days=30)
+        target_date = now + timedelta(days=45)
         days_to_friday = (4 - target_date.weekday()) % 7
         target_expiration = target_date + timedelta(days=days_to_friday)
         expiration = target_expiration.strftime("%Y-%m-%d")
 
-        target_strike = float(round(signal["entry_price"]))
-        if signal["direction"].upper() == "LONG":
-            target_strike = float(round(signal["entry_price"] * 1.025)) # 2.5% OTM for balanced cost/leverage
-        else:
-            target_strike = float(round(signal["entry_price"] * 0.975)) # 2.5% OTM for balanced cost/leverage
+        target_strike = float(round(signal["entry_price"])) # Target At-The-Money (ATM)
 
         opt_type = "put" if direction == "Short" else "call"
 

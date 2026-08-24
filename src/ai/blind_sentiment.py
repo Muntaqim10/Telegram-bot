@@ -1,7 +1,7 @@
 import json
 import logging
 from typing import List, Tuple
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 
 log = logging.getLogger(__name__)
 
@@ -11,7 +11,7 @@ class BlindSentimentAnalyzer:
     technical setup or intended trade direction (Long/Short). This prevents confirmation bias.
     """
     def __init__(self, api_key: str):
-        self._groq = AsyncGroq(api_key=api_key) if api_key else None
+        self._llm = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key) if api_key else None
 
     async def score_headlines(self, ticker: str, headlines: List[str]) -> Tuple[float, str, bool, float]:
         """
@@ -19,7 +19,7 @@ class BlindSentimentAnalyzer:
         (score: float, catalyst: str, is_whale: bool, confidence: float)
         Score ranges from 0.0 (extremely bearish) to 1.0 (extremely bullish), where 0.5 is neutral.
         """
-        if not self._groq:
+        if not self._llm:
             return 0.5, "AI Offline", False, 0.0
             
         if not headlines:
@@ -30,16 +30,16 @@ class BlindSentimentAnalyzer:
             f"CRITICAL RULES:\n"
             f"1. Return ONLY a valid JSON object. Do not include markdown code blocks, backticks, or conversational text.\n"
             f"2. Analyze the context strictly from the perspective of an objective equity analyst.\n"
-            f"3. Output schema must contain 'groq_score' (-1.00 to 1.00), 'groq_conf' (0.00 to 1.00), 'catalyst' (string), and 'whale_detected' (boolean).\n"
-            f"4. groq_score: Directional Sentiment Intensity from -1.00 (extremely bearish/negative news) to 1.00 (extremely bullish/positive news). 0.00 means neutral noise.\n"
-            f"5. groq_conf: High Confidence (0.80 - 1.00) means explicit earnings beats/misses or major contract wins/losses. Medium (0.40 - 0.79) means analyst upgrades/downgrades or rumors. Low (0.00 - 0.39) means generic noise/opinion.\n"
+            f"3. Output schema must contain 'score' (-1.00 to 1.00), 'conf' (0.00 to 1.00), 'catalyst' (string), and 'whale_detected' (boolean).\n"
+            f"4. score: Directional Sentiment Intensity from -1.00 (extremely bearish/negative news) to 1.00 (extremely bullish/positive news). 0.00 means neutral noise.\n"
+            f"5. conf: High Confidence (0.80 - 1.00) means explicit earnings beats/misses or major contract wins/losses. Medium (0.40 - 0.79) means analyst upgrades/downgrades or rumors. Low (0.00 - 0.39) means generic noise/opinion.\n"
             f"6. Institutional Whales: Set 'whale_detected' to true only if headlines report SEC filings, major dark pool purchases, heavy block trades, or massive insider transactions.\n\n"
             f"Headlines:\n" + "\n".join(headlines[:10])
         )
         
         try:
-            resp = await self._groq.chat.completions.create(
-                model="llama-3.1-8b-instant",
+            resp = await self._llm.chat.completions.create(
+                model="deepseek/deepseek-chat",
                 messages=[
                     {"role": "system", "content": f"You are an objective, deterministic financial text processing engine. Your sole task is to extract and quantify fundamental market sentiment for the target ticker {ticker} from raw financial news headlines. Strictly verify that the headlines correspond to {ticker}. Do not attribute news of other companies to {ticker}. Return ONLY a valid JSON object."},
                     {"role": "user", "content": prompt}
@@ -51,11 +51,11 @@ class BlindSentimentAnalyzer:
             
             data = json.loads(resp.choices[0].message.content)
             
-            raw_score = float(data.get('groq_score', 0.0))
+            raw_score = float(data.get('score', 0.0))
             # Normalize from [-1.0, 1.0] scale to [0.0, 1.0] scale (0.50 is neutral)
             score = (raw_score + 1.0) / 2.0
             
-            conf = float(data.get('groq_conf', 0.0))
+            conf = float(data.get('conf', 0.0))
             is_whale = bool(data.get('whale_detected', False))
             
             # Apply confidence dampener: if confidence is extremely low, pull score towards 0.5 (Neutral)
@@ -65,5 +65,5 @@ class BlindSentimentAnalyzer:
             return score, data.get('catalyst', 'Unknown'), is_whale, conf
             
         except Exception as e:
-            log.warning(f"Groq sentiment scoring failed for {ticker}: {e}")
+            log.warning(f"OpenRouter sentiment scoring failed for {ticker}: {e}")
             return 0.5, "AI Error", False, 0.0

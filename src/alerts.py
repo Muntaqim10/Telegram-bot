@@ -121,7 +121,7 @@ class AlertGateway:
                                     "<b>📊 RallyHunter Engine Status</b>\n\n"
                                     "• <b>Market Session:</b> Active\n"
                                     "• <b>API Providers:</b> Tradier & Finnhub (Online)\n"
-                                    "• <b>LLM Analyzer:</b> Groq/Llama 3.1 (Online)"
+                                    "• <b>LLM Analyzer:</b> OpenRouter/DeepSeek (Online)"
                                 )
                                 await self._send_telegram(status_msg)
                                     

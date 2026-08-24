@@ -42,7 +42,7 @@ from src.data.dynamic_scanner import DynamicTickerScanner, CANDIDATE_POOL
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 TRADIER_TOKEN = os.getenv("TRADIER_ACCESS_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -50,7 +50,7 @@ def validate_environment():
     """Ensure critical environment variables are present before booting."""
     missing = []
     if not TRADIER_TOKEN: missing.append("TRADIER_ACCESS_TOKEN")
-    if not GROQ_API_KEY: missing.append("GROQ_API_KEY")
+    if not OPENROUTER_API_KEY: missing.append("OPENROUTER_API_KEY")
     if not TELEGRAM_BOT_TOKEN: missing.append("TELEGRAM_BOT_TOKEN")
     if not TELEGRAM_CHAT_ID: missing.append("TELEGRAM_CHAT_ID")
     
@@ -72,7 +72,7 @@ class IntradayEngine:
         self.orb_strategy = ORBStrategy(orb_minutes=15)
         self.donchian_strategy = DonchianSwingStrategy(TRADIER_TOKEN)
         self.extended_scanner = ExtendedHoursScanner()
-        self.sentiment_analyzer = BlindSentimentAnalyzer(GROQ_API_KEY)
+        self.sentiment_analyzer = BlindSentimentAnalyzer(OPENROUTER_API_KEY)
         self.xgb_model = XGBMicroSentinelV2()
         self.risk_manager = RiskManager()
         self.alerts = AlertGateway(redis_client)
