@@ -28,7 +28,7 @@ class BlindSentimentAnalyzer:
         prompt = (
             f"Perform a professional, objective analysis of the following institutional catalysts for ${ticker}.\n\n"
             f"CRITICAL RULES:\n"
-            f"1. Return ONLY a valid JSON object. Do not include markdown code blocks, backticks, or conversational text.\n"
+            f"1. Return ONLY a SINGLE valid JSON object representing the overall aggregated sentiment. DO NOT return a list or array.\n"
             f"2. Analyze the context strictly from the perspective of an objective equity analyst.\n"
             f"3. Output schema must contain 'score' (-1.00 to 1.00), 'conf' (0.00 to 1.00), 'catalyst' (string), and 'whale_detected' (boolean).\n"
             f"4. score: Directional Sentiment Intensity from -1.00 (extremely bearish/negative news) to 1.00 (extremely bullish/positive news). 0.00 means neutral noise.\n"
@@ -49,7 +49,16 @@ class BlindSentimentAnalyzer:
                 timeout=10.0
             )
             
-            data = json.loads(resp.choices[0].message.content)
+            content = resp.choices[0].message.content
+            data = json.loads(content)
+            
+            if isinstance(data, list):
+                if len(data) > 0 and isinstance(data[0], dict):
+                    data = data[0]
+                else:
+                    data = {}
+            elif not isinstance(data, dict):
+                data = {}
             
             raw_score = float(data.get('score', 0.0))
             # Normalize from [-1.0, 1.0] scale to [0.0, 1.0] scale (0.50 is neutral)
