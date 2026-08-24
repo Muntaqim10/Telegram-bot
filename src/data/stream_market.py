@@ -1,9 +1,8 @@
-import os
 import json
 import logging
 import asyncio
 import aiohttp
-from typing import List, Callable
+from typing import List
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +46,7 @@ class TradierMarketStream:
                         await asyncio.sleep(5)
                         continue
                         
-                    log.info(f"Tradier WS session created. Connecting stream...")
+                    log.info("Tradier WS session created. Connecting stream...")
                     
                     # 2. Connect to WebSocket
                     ws_url = "wss://ws.tradier.com/v1/markets/events"

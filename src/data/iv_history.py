@@ -47,7 +47,7 @@ class IVHistoryTracker:
             return 50.0 # Prevent division by zero if all historical IVs are identical
             
         iv_rank = (current_iv - min_iv) / (max_iv - min_iv) * 100
-        return iv_rank
+        return max(0.0, min(100.0, iv_rank))
 
     def save(self) -> None:
         try:

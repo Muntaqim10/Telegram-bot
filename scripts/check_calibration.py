@@ -22,22 +22,9 @@ def main():
             df[col] = 0.0
 
     df = df.dropna(subset=features + ["target"])
-    X = df[features]
-    y = df["target"]
     
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"])
-        df = df.sort_values("date")
-        unique_dates = df["date"].dt.date.unique()
-        split_date = unique_dates[int(len(unique_dates) * 0.8)]
-        train_mask = df["date"].dt.date < split_date
-        
-        X_val = df[~train_mask][features]
-        y_val = df[~train_mask]["target"]
-    else:
-        split_idx = int(len(df) * 0.8)
-        X_val = X.iloc[split_idx:]
-        y_val = y.iloc[split_idx:]
+    from src.ai.xgb_micro_v2 import get_train_val_split
+    _, _, X_val, y_val = get_train_val_split(df, features, "target")
         
     # 2. Load the candidate model
     model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/models/xgb_micro_v2_candidate.json"))

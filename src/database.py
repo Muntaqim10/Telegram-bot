@@ -2,7 +2,6 @@ import asyncio
 import csv
 import os
 import sqlite3
-from datetime import datetime
 from typing import Any
 
 DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/rallyhunter.db"))

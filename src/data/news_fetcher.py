@@ -1,6 +1,5 @@
 import os
 import logging
-import asyncio
 import aiohttp
 from datetime import date, timedelta, datetime
 from typing import List

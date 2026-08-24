@@ -1,12 +1,9 @@
 import os
-import time
-import json
 import asyncio
 import aiohttp
 import pandas as pd
 import logging
 from datetime import datetime, timedelta
-import os
 from dotenv import load_dotenv
 
 root_env = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.env"))
@@ -59,7 +56,7 @@ async def fetch_1m_data(session: aiohttp.ClientSession, ticker: str, start_date:
             "columns": "open,high,low,close,volume"
         }
         
-        chunk_success = False
+
         for attempt in range(1, 4):
             try:
                 async with session.get(url, headers=headers, params=params, timeout=20.0) as resp:
@@ -79,7 +76,7 @@ async def fetch_1m_data(session: aiohttp.ClientSession, ticker: str, start_date:
                             df = df.between_time("09:30", "16:00")
                             all_dfs.append(df)
                     
-                    chunk_success = True
+
                     break
             except Exception as e:
                 log.warning(f"Attempt {attempt}/3 failed to fetch 1m data for {ticker}: {e}")

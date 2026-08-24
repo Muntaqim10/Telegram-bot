@@ -3,7 +3,6 @@ import logging
 import os
 import aiohttp
 import redis.asyncio as aioredis
-from datetime import datetime
 from dotenv import load_dotenv
 
 import sys
@@ -13,7 +12,6 @@ root_env = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.env"))
 config_env = os.path.abspath(os.path.join(os.path.dirname(__file__), "../config/.env"))
 load_dotenv(dotenv_path=root_env)
 load_dotenv(dotenv_path=config_env)
-from pydantic import BaseModel
 import pandas as pd
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -207,8 +205,7 @@ class IntradayEngine:
                         
                     # 0. Update Active Positions in Risk Manager
                     if ticker in self.risk_manager.active_positions:
-                        orb_state = self.orb_strategy.intraday_state.get(ticker, {})
-                        
+
                         cached_atr = None
                         if hasattr(self, "donchian_strategy") and hasattr(self.donchian_strategy, "atr_cache"):
                             cached_atr = self.donchian_strategy.atr_cache.get(ticker)
@@ -281,7 +278,7 @@ async def lifespan(app: FastAPI):
     # Pre-flight Type Safety Self-Diagnostic Check
     log.info("[DIAGNOSTIC] Running pre-flight string tick & type safety verification...")
     try:
-        test_sig = app.state.engine.orb_strategy.process_tick(
+        app.state.engine.orb_strategy.process_tick(
             "SPY", "500.00", "100", pd.Timestamp.now(tz="US/Eastern")
         )
         log.info("[DIAGNOSTIC] ✅ Type Safety Verification: PASSED (String ticks parsed as floats cleanly)")

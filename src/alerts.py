@@ -12,7 +12,6 @@ import aiohttp
 
 from typing import Any
 from src.database import add_trade
-from src.models.signal import TradeSignal
 from src.utils.telegram_formatter import format_telegram_alert
 
 # ── Configuration ──────────────────────────────────────────────────────────
@@ -59,8 +58,6 @@ class AlertGateway:
         vol = alert["volume"]
         
         emoji = "🚀" if direction == "Long" else "🩸"
-        color = "🟢" if direction == "Long" else "🔴"
-        
         msg = (
             f"🌙 <b>EXTENDED HOURS MOVER</b> 🌙\n\n"
             f"<b>{ticker}</b> {emoji} <b>{direction} Setup</b>\n"

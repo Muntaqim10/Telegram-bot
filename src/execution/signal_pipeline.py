@@ -118,10 +118,15 @@ class SignalPipeline:
         opt_type = "put" if direction == "Short" else "call"
 
         next_earnings = await self.earnings_calendar.get_next_earnings_date(ticker, session=session)
-        days_to_earnings = self.earnings_calendar.days_until_earnings(next_earnings)
-        earnings_in_window = (
-            days_to_earnings is not None and 0 <= days_to_earnings <= 32
-        )
+        earnings_in_window = False
+        if next_earnings:
+            try:
+                earnings_dt = datetime.strptime(next_earnings, "%Y-%m-%d").date()
+                expiration_dt = datetime.strptime(expiration, "%Y-%m-%d").date()
+                today_dt = datetime.now().date()
+                earnings_in_window = today_dt <= earnings_dt <= expiration_dt
+            except ValueError:
+                earnings_in_window = False
         
         last_earnings = await self.earnings_calendar.get_last_earnings_date(ticker, session=session)
         days_since = self.earnings_calendar.days_since_earnings(last_earnings)
@@ -149,15 +154,15 @@ class SignalPipeline:
         # Verdict handling
         strategy_suggestion = None
         iv_value = pricing_data.get("iv", 0.0)
-        verdict = pricing_data.get("verdict", "")
+        pricing_verdict_str = pricing_data.get("verdict", "")
         
-        if verdict == "POOR VALUE":
+        if pricing_verdict_str == "POOR VALUE":
             log.warning(f"[{ticker}] Alert suppressed: {pricing_data['reason']}")
             return
-        elif verdict == "UNTRADEABLE AT SIZE":
+        elif pricing_verdict_str == "UNTRADEABLE AT SIZE":
             strategy_suggestion = f"⚠️ Setup valid, not tradeable at your size. {pricing_data['reason']}"
             log.info(f"[{ticker}] Untradeable at size. Tagging alert, not blocking.")
-        elif verdict == "OVERPRICED - HIGH IV" or iv_value > 1.20:
+        elif pricing_verdict_str in ("OVERPRICED - HIGH IV", "OVERPRICED - HIGH IV RANK") or iv_value > 1.20:
             iv_pct = iv_value * 100
             strategy_suggestion = (
                 f"💡 IV is rich ({iv_pct:.0f}%) — premium pricing in continued movement. "

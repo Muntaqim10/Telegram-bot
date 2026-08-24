@@ -1,7 +1,7 @@
 from src.models.signal import TradeSignal
 
 def format_telegram_alert(signal: TradeSignal) -> str:
-    direction_emoji = "🟢" if signal.signal_direction.upper() == "LONG" else "🔴"
+
     action_label = "LONG (Calls)" if signal.signal_direction.upper() == "LONG" else "SHORT (Puts)"
     
     header_map = {
@@ -52,7 +52,7 @@ def format_telegram_alert(signal: TradeSignal) -> str:
         options_lines = f"⚡ <b>Target (Intraday):</b> <code>{option_details}</code>\n"
         if signal.delta > 0:
             iv_str = f"{signal.iv*100:.1f}%" if signal.iv > 0 else "N/A"
-            options_lines += f"⚖️ <b>Greeks & Premium:</b>\n"
+            options_lines += "⚖️ <b>Greeks & Premium:</b>\n"
             options_lines += f"   • Premium: <code>${signal.option_ask:.2f}</code>\n"
             options_lines += f"   • Delta: <code>{signal.delta:.2f}</code>\n"
             options_lines += f"   • Theta: <code>{signal.theta:.4f}</code>\n"

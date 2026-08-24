@@ -6,6 +6,33 @@ from typing import Dict, Any
 
 log = logging.getLogger(__name__)
 
+def get_train_val_split(df: pd.DataFrame, features: list[str], target_col: str = "target"):
+    """
+    Splits a dataframe into train/val sets by date (80/20), falling 
+    back to positional split if no 'date' column exists. Returns 
+    (X_train, y_train, X_val, y_val).
+    """
+    if "date" in df.columns:
+        df = df.copy()
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date")
+        unique_dates = df["date"].dt.date.unique()
+        split_date = unique_dates[int(len(unique_dates) * 0.8)]
+        train_mask = df["date"].dt.date < split_date
+        
+        X_train = df[train_mask][features]
+        y_train = df[train_mask][target_col]
+        X_val = df[~train_mask][features]
+        y_val = df[~train_mask][target_col]
+    else:
+        split_idx = int(len(df) * 0.8)
+        X_train = df[features].iloc[:split_idx]
+        y_train = df[target_col].iloc[:split_idx]
+        X_val = df[features].iloc[split_idx:]
+        y_val = df[target_col].iloc[split_idx:]
+        
+    return X_train, y_train, X_val, y_val
+
 class XGBMicroSentinelV2:
     """
     XGBoost model tailored for identifying all-day trend potential (>5% intraday moves).
@@ -70,24 +97,7 @@ class XGBMicroSentinelV2:
 
             df = df.dropna(subset=features + ["target"])
             
-            X = df[features]
-            y = df["target"]
-            
-            if "date" in df.columns:
-                df["date"] = pd.to_datetime(df["date"])
-                df = df.sort_values("date")
-                unique_dates = df["date"].dt.date.unique()
-                split_date = unique_dates[int(len(unique_dates) * 0.8)]
-                train_mask = df["date"].dt.date < split_date
-                
-                X_train = df[train_mask][features]
-                y_train = df[train_mask]["target"]
-                X_val = df[~train_mask][features]
-                y_val = df[~train_mask]["target"]
-            else:
-                split_idx = int(len(df) * 0.8)
-                X_train, X_val = X.iloc[:split_idx], X.iloc[split_idx:]
-                y_train, y_val = y.iloc[:split_idx], y.iloc[split_idx:]
+            X_train, y_train, X_val, y_val = get_train_val_split(df, features, "target")
 
             dtrain = self.xgb.DMatrix(X_train, label=y_train)
             dval = self.xgb.DMatrix(X_val, label=y_val)

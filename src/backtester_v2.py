@@ -3,7 +3,6 @@ import glob
 import asyncio
 import logging
 import pandas as pd
-from typing import List
 from src.utils.math_utils import calculate_take_profit
 
 log = logging.getLogger(__name__)

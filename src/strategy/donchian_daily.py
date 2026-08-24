@@ -4,7 +4,7 @@ import asyncio
 import aiohttp
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional
+from typing import Dict, List
 from datetime import datetime, timedelta
 
 log = logging.getLogger("rallyhunter.donchian")
