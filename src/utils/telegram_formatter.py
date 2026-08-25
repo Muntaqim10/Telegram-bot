@@ -119,7 +119,13 @@ def format_telegram_alert(signal: TradeSignal) -> str:
             f"  • {e3} <b>{tf3.get('name')}:</b> <i>{tf3.get('desc')}</i>\n"
         )
 
+    early_surge_banner = ""
+    if getattr(signal, "is_early_surge", False):
+        desc = getattr(signal, "early_surge_desc", "3%+ Mega / 10%+ Mid-Cap")
+        early_surge_banner = f"🚨 <b>HIGH ALERT: EARLY MORNING {desc.upper()}</b>\n"
+
     msg = (
+        f"{early_surge_banner}"
         f"{strategy_header}\n"
         f"Asset: {ticker_code} ({action_label})\n"
         f"✅ <b>STATUS:</b> CONFIRMED\n"

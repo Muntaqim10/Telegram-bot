@@ -97,13 +97,19 @@ class ExtendedHoursScanner:
         today_str = current_timestamp.strftime("%Y-%m-%d")
         alerts = []
 
+        from src.data.dynamic_scanner import MEGA_CAP_TICKERS
+        
         for ticker, state in self.ticker_state.items():
             if state["prev_close"] <= 0:
                 continue
                 
             pct_change = ((state["last_price"] - state["prev_close"]) / state["prev_close"]) * 100.0
             
-            if abs(pct_change) >= self.move_pct_threshold and state["cum_vol"] >= self.min_vol_threshold:
+            # Dynamic Early Morning High Alert Thresholds: >=3% for Mega-Caps, >=10% for Mid-Caps
+            is_mega = ticker in MEGA_CAP_TICKERS
+            threshold = 3.0 if is_mega else 10.0
+            
+            if abs(pct_change) >= threshold and state["cum_vol"] >= self.min_vol_threshold:
                 if not state["alert_sent_today"]:
                     state["alert_sent_today"] = True
                     
@@ -112,7 +118,8 @@ class ExtendedHoursScanner:
                     self.triggered_tickers[today_str].add(ticker)
                     
                     direction = "Long" if pct_change > 0 else "Short"
-                    log.info(f"🌙 EXTENDED HOURS MOVER: {ticker} moved {pct_change:.2f}% (Vol: {state['cum_vol']})")
+                    tier_name = "MEGA-CAP" if is_mega else "MID-CAP"
+                    log.info(f"🚨 [HIGH ALERT] EARLY MORNING {tier_name} SURGE: {ticker} moved {pct_change:+.2f}% (Threshold: {threshold}%, Vol: {state['cum_vol']:,})")
                     
                     alerts.append({
                         "ticker": ticker,
@@ -121,7 +128,9 @@ class ExtendedHoursScanner:
                         "price": state["last_price"],
                         "volume": state["cum_vol"],
                         "session": session,
-                        "prev_close": state["prev_close"]
+                        "prev_close": state["prev_close"],
+                        "is_early_surge": True,
+                        "surge_type": f"{tier_name} SURGE ({pct_change:+.1f}%)"
                     })
         return alerts
         

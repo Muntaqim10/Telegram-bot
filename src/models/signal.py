@@ -67,3 +67,7 @@ class TradeSignal:
     # Optional High-Leverage OTM Runner (DeepSeek + Backtest Concordant)
     otm_runner: Optional[Dict[str, Any]] = None
     otm_qualified: bool = False
+
+    # Early Morning Surge High Alert Flag (>=3% Mega / >=10% Mid-Cap)
+    is_early_surge: bool = False
+    early_surge_desc: str = ""

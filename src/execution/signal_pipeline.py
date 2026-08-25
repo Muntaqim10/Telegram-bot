@@ -294,6 +294,29 @@ class SignalPipeline:
                 otm_qualified = True
                 log.info(f"🚀 [{ticker}] Setup QUALIFIED for RARE High-Leverage OTM Runner (${raw_otm.get('strike')} {opt_type.upper()}).")
 
+        # Check for Early Morning Surge High Alert (>=3% Mega-Cap or >=10% Mid-Cap before 10:30 AM EST)
+        is_early_surge = signal.get("is_early_surge", False)
+        early_surge_desc = signal.get("surge_type", "")
+        sig_time = signal.get("timestamp")
+        if not is_early_surge:
+            try:
+                hour = sig_time.hour if hasattr(sig_time, "hour") else 9
+                minute = sig_time.minute if hasattr(sig_time, "minute") else 30
+            except Exception:
+                hour, minute = 9, 30
+
+            is_morning = (hour < 10) or (hour == 10 and minute <= 30)
+            is_mega = tier_info.get("tier") == "MEGA-CAP"
+            if is_morning:
+                if is_mega and expected_move_pct >= 3.0:
+                    is_early_surge = True
+                    early_surge_desc = f"MEGA-CAP SURGE (+{expected_move_pct:.1f}%)"
+                    log.info(f"🚨 [{ticker}] HIGH ALERT: Early Morning {early_surge_desc}")
+                elif not is_mega and expected_move_pct >= 10.0:
+                    is_early_surge = True
+                    early_surge_desc = f"MID-CAP SURGE (+{expected_move_pct:.1f}%)"
+                    log.info(f"🚨 [{ticker}] HIGH ALERT: Early Morning {early_surge_desc}")
+
         # 5. Build TradeSignal Object
         trade_signal = TradeSignal(
             ticker=ticker,
@@ -344,7 +367,9 @@ class SignalPipeline:
             earnings_date=next_earnings,
             gex_confidence=pricing_data.get("gex_confidence", "STANDARD"),
             otm_runner=raw_otm if otm_qualified else None,
-            otm_qualified=otm_qualified
+            otm_qualified=otm_qualified,
+            is_early_surge=is_early_surge,
+            early_surge_desc=early_surge_desc
         )
 
         await self.alerts.dispatch_high_conviction(trade_signal)
