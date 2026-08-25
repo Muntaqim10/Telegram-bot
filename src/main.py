@@ -245,7 +245,8 @@ class IntradayEngine:
                                 ticker=ticker,
                                 outcome_status=outcome["status"],
                                 exit_price=outcome["exit_price"],
-                                pnl_pct=outcome["pnl"]
+                                pnl_pct=outcome["pnl"],
+                                estimated_option_pnl_pct=outcome.get("estimated_option_pnl_pct")
                             )
 
                     # 1. Process Tick in Strategy

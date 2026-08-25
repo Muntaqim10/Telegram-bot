@@ -60,46 +60,69 @@ class RiskManager:
         take_profit = pos["take_profit"]
         
         atr_distance = current_atr * self.atr_multiplier if current_atr > 0 else 0
+        outcome = None
         
         if direction == "Long":
             # Check if Take Profit hit
             if current_price >= take_profit:
                 profit_pct = (current_price - entry_price) / entry_price
-                return {"status": "TP_HIT", "exit_price": current_price, "pnl": profit_pct}
+                outcome = {"status": "TP_HIT", "exit_price": current_price, "pnl": profit_pct}
 
             # If price moves up, raise the stop
-            current_profit_pct = (current_price - entry_price) / entry_price
-            if atr_distance > 0 and current_profit_pct >= self.min_profit_pct:
-                new_stop = current_price - atr_distance
-                if new_stop > current_stop:
-                    pos["trailing_stop"] = new_stop
-                
-            # Check if stopped out
-            if current_price <= pos["trailing_stop"]:
+            elif current_price <= pos["trailing_stop"]:
                 profit_pct = (current_price - entry_price) / entry_price
-                return {"status": "STOPPED_OUT", "exit_price": current_price, "pnl": profit_pct}
+                outcome = {"status": "STOPPED_OUT", "exit_price": current_price, "pnl": profit_pct}
+            else:
+                current_profit_pct = (current_price - entry_price) / entry_price
+                if atr_distance > 0 and current_profit_pct >= self.min_profit_pct:
+                    new_stop = current_price - atr_distance
+                    if new_stop > current_stop:
+                        pos["trailing_stop"] = new_stop
                 
         elif direction == "Short":
             # Check if Take Profit hit
             if current_price <= take_profit:
                 profit_pct = (entry_price - current_price) / entry_price
-                return {"status": "TP_HIT", "exit_price": current_price, "pnl": profit_pct}
+                outcome = {"status": "TP_HIT", "exit_price": current_price, "pnl": profit_pct}
 
-            # If price moves down, lower the stop
-            current_profit_pct = (entry_price - current_price) / entry_price
-            if atr_distance > 0 and current_profit_pct >= self.min_profit_pct:
-                new_stop = current_price + atr_distance
-                if new_stop < current_stop or current_stop == 0:
-                    pos["trailing_stop"] = new_stop
-                
             # Check if stopped out
-            if current_price >= pos["trailing_stop"]:
+            elif current_price >= pos["trailing_stop"]:
                 profit_pct = (entry_price - current_price) / entry_price
-                return {"status": "STOPPED_OUT", "exit_price": current_price, "pnl": profit_pct}
+                outcome = {"status": "STOPPED_OUT", "exit_price": current_price, "pnl": profit_pct}
+            else:
+                # If price moves down, lower the stop
+                current_profit_pct = (entry_price - current_price) / entry_price
+                if atr_distance > 0 and current_profit_pct >= self.min_profit_pct:
+                    new_stop = current_price + atr_distance
+                    if new_stop < current_stop or current_stop == 0:
+                        pos["trailing_stop"] = new_stop
+
+        if outcome is not None:
+            # Linear delta approximation (ESTIMATE ONLY - delta-only, no theta/gamma adjustment, no live option quote)
+            # This estimates the option's return using entry delta as a linear approximation since we don't have a continuous live option tick feed.
+            opt_entry = pos.get("option_entry_price")
+            opt_delta = pos.get("option_entry_delta")
+            if opt_entry and opt_entry > 0 and opt_delta is not None and opt_delta != 0:
+                stock_move = current_price - entry_price
+                estimated_opt_move = stock_move * abs(opt_delta)
+                if direction == "Short":
+                    estimated_opt_move = -stock_move * abs(opt_delta)
+                estimated_opt_price = max(0.01, opt_entry + estimated_opt_move)
+                outcome["estimated_option_pnl_pct"] = (estimated_opt_price - opt_entry) / opt_entry
+            else:
+                outcome["estimated_option_pnl_pct"] = None  # no option data available, don't fabricate a number
+            return outcome
                 
         return {"status": "ACTIVE", "current_stop": pos["trailing_stop"]}
 
-    def close_trade(self, ticker: str, outcome_status: str, exit_price: float, pnl_pct: float):
+    def attach_option_pricing(self, ticker: str, option_entry_price: float, option_entry_delta: float, option_entry_theta: float) -> None:
+        """Attaches real option entry data to an already-registered position."""
+        if ticker in self.active_positions:
+            self.active_positions[ticker]["option_entry_price"] = option_entry_price
+            self.active_positions[ticker]["option_entry_delta"] = option_entry_delta
+            self.active_positions[ticker]["option_entry_theta"] = option_entry_theta
+
+    def close_trade(self, ticker: str, outcome_status: str, exit_price: float, pnl_pct: float, estimated_option_pnl_pct: float = None):
         """
         Removes the active position and logs the final outcome to CSV for ML training.
         """
@@ -117,11 +140,13 @@ class RiskManager:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         file_exists = os.path.exists(file_path)
         
+        opt_pnl_str = f"{estimated_option_pnl_pct:.4f}" if estimated_option_pnl_pct is not None else ""
+        
         try:
             with open(file_path, 'a', newline='') as f:
                 writer = csv.writer(f)
                 if not file_exists:
-                    writer.writerow(["timestamp", "ticker", "direction", "entry_price", "exit_price", "outcome", "pnl_pct"])
+                    writer.writerow(["timestamp", "ticker", "direction", "entry_price", "exit_price", "outcome", "pnl_pct", "estimated_option_pnl_pct"])
                 
                 writer.writerow([
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -130,9 +155,11 @@ class RiskManager:
                     f"{pos['entry_price']:.2f}",
                     f"{exit_price:.2f}",
                     outcome_status,
-                    f"{pnl_pct:.4f}"
+                    f"{pnl_pct:.4f}",
+                    opt_pnl_str
                 ])
-            log.info(f"[{ticker}] TRADE CLOSED: {outcome_status}. PnL: {pnl_pct*100:.2f}% (Exit: ${exit_price:.2f})")
+            opt_log = f", Option PnL Est: {estimated_option_pnl_pct*100:.1f}%" if estimated_option_pnl_pct is not None else ""
+            log.info(f"[{ticker}] TRADE CLOSED: {outcome_status}. Stock PnL: {pnl_pct*100:.2f}%{opt_log} (Exit: ${exit_price:.2f})")
         except Exception as e:
             log.error(f"Failed to write trade outcome for {ticker}: {e}")
 
@@ -145,7 +172,18 @@ class RiskManager:
         except Exception as e:
             log.warning(f"Failed to schedule database archive for {ticker}: {e}")
 
-    def add_position(self, ticker: str, entry_price: float, initial_atr: float, direction: str, stop_loss: float = None, take_profit: float = None) -> dict:
+    def add_position(
+        self, 
+        ticker: str, 
+        entry_price: float, 
+        initial_atr: float, 
+        direction: str, 
+        stop_loss: float = None, 
+        take_profit: float = None,
+        option_entry_price: float = None,
+        option_entry_delta: float = None,
+        option_entry_theta: float = None
+    ) -> dict:
         """
         Registers a new intraday runner position.
         Returns the computed (or provided) stop_loss and take_profit levels.
@@ -164,10 +202,13 @@ class RiskManager:
             tp = calculate_take_profit(entry_price, initial_atr, direction)
         
         self.active_positions[ticker] = {
-            "entry_price": entry_price,
+            "entry_price": entry_price,          # keep as-is (stock price, still useful context)
             "trailing_stop": initial_stop,
             "take_profit": tp,
-            "direction": direction
+            "direction": direction,
+            "option_entry_price": option_entry_price,
+            "option_entry_delta": option_entry_delta,
+            "option_entry_theta": option_entry_theta,
         }
         log.info(f"Position added for {ticker} ({direction}) at {entry_price}. Stop: {initial_stop:.2f}, TP: {tp:.2f}")
         return {"stop_loss": initial_stop, "take_profit": tp}
