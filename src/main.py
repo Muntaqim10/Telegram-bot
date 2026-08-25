@@ -176,7 +176,7 @@ class IntradayEngine:
                 # Run between 9:30 AM and 4:00 PM EST at the top of each hour (10:00, 11:00, 12:00, 13:00, 14:00, 15:00, 16:00)
                 if (9 <= now.hour <= 16) and now.minute == 0 and self._last_snapshot_hour != now.hour:
                     session = await self.get_shared_session()
-                    card = await self.snapshot_engine.generate_market_snapshot(session=session)
+                    card = await self.snapshot_engine.generate_market_snapshot(session=session, alert_gateway=self.alerts)
                     if card:
                         await self.alerts.dispatch_informational(card)
                         self._last_snapshot_hour = now.hour
@@ -226,6 +226,8 @@ class IntradayEngine:
                         
                     # 0. Update Active Positions in Risk Manager
                     if ticker in self.risk_manager.active_positions:
+                        pos = self.risk_manager.active_positions[ticker]
+                        catalyst_type = pos.get("catalyst_type", "Standard Breakout")
 
                         cached_atr = None
                         if hasattr(self, "donchian_strategy") and hasattr(self.donchian_strategy, "atr_cache"):
@@ -248,6 +250,7 @@ class IntradayEngine:
                                 pnl_pct=outcome["pnl"],
                                 estimated_option_pnl_pct=outcome.get("estimated_option_pnl_pct")
                             )
+                            self.alerts.record_outcome(catalyst_type=catalyst_type, outcome_status=outcome["status"])
 
                     # 1. Process Tick in Strategy
                     now = pd.Timestamp.now(tz="US/Eastern")  # Cache once per tick

@@ -108,11 +108,13 @@ class SignalPipeline:
         # Extract natively computed SL/TP if they exist (e.g., from Donchian signals)
         stop_loss = signal.get("stop_loss")
         take_profit = signal.get("take_profit")
+        cat_type = signal.get("catalyst_type", "Standard Breakout")
 
         if stop_loss is not None and take_profit is not None:
             risk_levels = self.risk_manager.add_position(
                 ticker, signal["entry_price"], initial_atr=0.0, direction=signal["direction"],
-                stop_loss=stop_loss, take_profit=take_profit, invalidation_level=invalidation_level
+                stop_loss=stop_loss, take_profit=take_profit, invalidation_level=invalidation_level,
+                catalyst_type=cat_type
             )
         else:
             # ORB Signals: attempt to fetch cached real ATR, otherwise fallback with warning
@@ -124,14 +126,16 @@ class SignalPipeline:
             if cached_atr and not pd.isna(cached_atr):
                 risk_levels = self.risk_manager.add_position(
                     ticker, signal["entry_price"], initial_atr=cached_atr, 
-                    direction=signal["direction"], invalidation_level=invalidation_level
+                    direction=signal["direction"], invalidation_level=invalidation_level,
+                    catalyst_type=cat_type
                 )
             else:
                 import logging
                 logging.getLogger("rallyhunter.pipeline").warning(f"[{ticker}] No cached daily ATR available. Falling back to default ATR=1.5")
                 risk_levels = self.risk_manager.add_position(
                     ticker, signal["entry_price"], initial_atr=1.5, 
-                    direction=signal["direction"], invalidation_level=invalidation_level
+                    direction=signal["direction"], invalidation_level=invalidation_level,
+                    catalyst_type=cat_type
                 )
 
         # 3.5 Tiered Velocity & Expected Move Magnitude Gate

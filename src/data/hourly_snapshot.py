@@ -2,7 +2,7 @@ import os
 import logging
 import aiohttp
 import pandas as pd
-from typing import Optional
+from typing import Optional, Any
 from src.data.dynamic_scanner import CANDIDATE_POOL, MEGA_CAP_TICKERS
 
 log = logging.getLogger(__name__)
@@ -19,9 +19,10 @@ class HourlySnapshotEngine:
             "Accept": "application/json"
         }
 
-    async def generate_market_snapshot(self, session: Optional[aiohttp.ClientSession] = None) -> Optional[str]:
+    async def generate_market_snapshot(self, session: Optional[aiohttp.ClientSession] = None, alert_gateway: Optional[Any] = None) -> Optional[str]:
         """
         Pulls real-time bulk quotes for the watchlist universe and builds a formatted HTML Telegram card.
+        Optionally appends live catalyst reliability stats if available.
         """
         if not self.token:
             log.warning("No Tradier token configured for hourly snapshot.")
@@ -126,6 +127,13 @@ class HourlySnapshotEngine:
                 e = "🟢" if m["change_pct"] >= 0 else "🔴"
                 mid_lines += f"  • {e} <b>{m['symbol']}</b>: <code>${m['price']:.2f}</code> ({m['change_pct']:+.2f}%)\n"
 
+            # Optional Catalyst Reliability section (if >=3 decided trades exist)
+            catalyst_section = ""
+            if alert_gateway and hasattr(alert_gateway, "get_catalyst_report"):
+                report = alert_gateway.get_catalyst_report()
+                if report:
+                    catalyst_section = f"\n\n{report}"
+
             msg = (
                 f"⏱️ <b>HOURLY MARKET PULSE SNAPSHOT</b> ({now_est})\n\n"
                 f"📊 <b>Core Index Benchmarks:</b>\n"
@@ -137,7 +145,8 @@ class HourlySnapshotEngine:
                 f"🏢 <b>Top Mega-Cap Leaders:</b>\n"
                 f"{mega_lines}\n"
                 f"🚀 <b>Top High-Beta Mid-Cap Movers:</b>\n"
-                f"{mid_lines}\n"
+                f"{mid_lines}"
+                f"{catalyst_section}\n\n"
                 f"🎯 <i>Monitoring 4-Timeframe & 0.75 Delta ITM breakout entries...</i>"
             )
 

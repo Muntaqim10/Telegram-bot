@@ -10,7 +10,7 @@ from datetime import datetime
 
 import aiohttp
 
-from typing import Any
+from typing import Any, Optional, Dict
 from src.database import add_trade
 from src.utils.telegram_formatter import format_telegram_alert
 
@@ -32,6 +32,54 @@ class AlertGateway:
         self._url = f"https://api.telegram.org/bot{self._token}/"
         self._vault_lock = asyncio.Lock() # Thread-safe CSV writes
         self._session = None
+        # In-memory catalyst performance counters: catalyst_type -> outcome counts
+        self.catalyst_stats = {}
+
+    def record_outcome(self, catalyst_type: str, outcome_status: str) -> None:
+        """
+        Increments in-memory trade outcome counters per catalyst type.
+        Tracks total signals, INVALIDATED, STOPPED_OUT, and TP_HIT exits.
+        """
+        cat = catalyst_type or "Standard Breakout"
+        if cat not in self.catalyst_stats:
+            self.catalyst_stats[cat] = {
+                "total_signals": 0,
+                "INVALIDATED": 0,
+                "STOPPED_OUT": 0,
+                "TP_HIT": 0
+            }
+        
+        self.catalyst_stats[cat]["total_signals"] += 1
+        if outcome_status in self.catalyst_stats[cat]:
+            self.catalyst_stats[cat][outcome_status] += 1
+        else:
+            self.catalyst_stats[cat][outcome_status] = 1
+
+    def get_catalyst_report(self) -> Optional[str]:
+        """
+        Returns a formatted HTML string summarizing catalyst fakeout and win rates today.
+        Only includes catalysts with at least 3 decided trades to avoid small-sample noise.
+        """
+        lines = []
+        for cat, stats in sorted(self.catalyst_stats.items()):
+            inv = stats.get("INVALIDATED", 0)
+            stopped = stats.get("STOPPED_OUT", 0)
+            tp = stats.get("TP_HIT", 0)
+            total_decided = inv + stopped + tp
+            
+            if total_decided >= 3:
+                fakeout_rate = (inv / total_decided) * 100.0
+                win_rate = (tp / total_decided) * 100.0
+                clean_cat = cat.replace("🔥 ", "").replace("🔄 ", "").replace("🔺 ", "").replace("🔻 ", "").replace("🟢 ", "").replace("🔴 ", "")
+                lines.append(
+                    f"  • <b>{clean_cat}</b>: <code>{win_rate:.0f}% Win</code> | <code>{fakeout_rate:.0f}% Fakeout</code> ({total_decided} trades)"
+                )
+                
+        if not lines:
+            return None
+            
+        header = "🎯 <b>Catalyst Reliability (Sample &ge; 3):</b>\n"
+        return header + "\n".join(lines)
 
     async def get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:

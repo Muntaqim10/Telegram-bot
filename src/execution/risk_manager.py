@@ -202,7 +202,8 @@ class RiskManager:
         option_entry_price: float = None,
         option_entry_delta: float = None,
         option_entry_theta: float = None,
-        invalidation_level: float = None
+        invalidation_level: float = None,
+        catalyst_type: str = "Standard Breakout"
     ) -> dict:
         """
         Registers a new intraday runner position.
@@ -230,7 +231,8 @@ class RiskManager:
             "option_entry_delta": option_entry_delta,
             "option_entry_theta": option_entry_theta,
             "invalidation_level": invalidation_level,
-            "has_moved_favorably": False
+            "has_moved_favorably": False,
+            "catalyst_type": catalyst_type
         }
         inval_str = f", Invalidation: {invalidation_level:.2f}" if invalidation_level is not None else ""
         log.info(f"Position added for {ticker} ({direction}) at {entry_price}. Stop: {initial_stop:.2f}, TP: {tp:.2f}{inval_str}")
