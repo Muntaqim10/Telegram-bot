@@ -276,11 +276,15 @@ class SignalPipeline:
         ai_thesis = synth_result.get("ai_thesis", "")
         if synth_result.get("is_whale"):
             is_whale = True
+        bt_age = bt_stats.get("backtest_age_days")
+        staleness_note = f" ⚠️ (stale: {bt_age:.0f}d old)" if bt_age is not None and bt_age > 7 else ""
+
         hist_edge_str = ""
         if bt_stats.get("total_trades", 0) > 0:
             hist_edge_str = (
                 f"{bt_stats['win_rate']}% Win Rate ({bt_stats['total_trades']} trades | "
                 f"+{bt_stats['avg_return_pct']}% Avg ROI | Max +{bt_stats['max_gain_pct']}%)"
+                f"{staleness_note}"
             )
         else:
             hist_edge_str = "Initial Live Tracking (Broad Watchlist Dynamic Scan)"

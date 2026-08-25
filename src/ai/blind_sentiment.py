@@ -72,6 +72,8 @@ class BlindSentimentAnalyzer:
         bt_trades = backtest_stats.get("total_trades", 0)
         bt_avg_roi = backtest_stats.get("avg_return_pct", 0.0)
         bt_tier = backtest_stats.get("asset_tier", "MID-CAP")
+        bt_age = backtest_stats.get("backtest_age_days")
+        age_note = f" (from a backtest run {bt_age:.0f} days ago)" if bt_age is not None else ""
 
         exp_move = math_context.get("expected_move_pct", 0.0)
         strike = math_context.get("target_strike", 0.0)
@@ -87,7 +89,7 @@ class BlindSentimentAnalyzer:
             f"   • Asset Tier: {bt_tier}\n"
             f"   • Mathematical Expected Move: +{exp_move:.1f}%\n"
             f"   • 0.75 Delta ITM Contract: ${strike} {opt_type} @ ${opt_ask:.2f} (Delta: {delta:.2f})\n\n"
-            f"2. HISTORICAL BACKTEST PERFORMANCE:\n"
+            f"2. HISTORICAL BACKTEST PERFORMANCE{age_note}:\n"
             f"   • Sample Size: {bt_trades} trades\n"
             f"   • Historical Win Rate: {bt_wr}%\n"
             f"   • Historical Avg Option ROI: +{bt_avg_roi}%\n\n"

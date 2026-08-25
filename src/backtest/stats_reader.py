@@ -18,6 +18,7 @@ class BacktestStatsReader:
         )
         self._stats_cache: Dict[str, Dict[str, Any]] = {}
         self._last_loaded_file: Optional[str] = None
+        self._last_loaded_age_days: Optional[float] = None
         self.reload_latest_results()
 
     def reload_latest_results(self) -> bool:
@@ -32,6 +33,10 @@ class BacktestStatsReader:
             return False
 
         latest_file = max(csv_files, key=os.path.getmtime)
+        import time
+        file_age_days = (time.time() - os.path.getmtime(latest_file)) / 86400.0
+        self._last_loaded_age_days = file_age_days
+
         if latest_file == self._last_loaded_file and self._stats_cache:
             return True
 
@@ -85,7 +90,7 @@ class BacktestStatsReader:
 
             self._stats_cache = new_cache
             self._last_loaded_file = latest_file
-            log.info(f"Loaded historical backtest statistics for {len(new_cache)} tickers from {os.path.basename(latest_file)}")
+            log.info(f"Loaded historical backtest statistics for {len(new_cache)} tickers from {os.path.basename(latest_file)} (age: {file_age_days:.1f}d)")
             return True
 
         except Exception as e:
@@ -95,9 +100,12 @@ class BacktestStatsReader:
     def get_ticker_stats(self, ticker: str) -> Dict[str, Any]:
         """Returns the empirical backtest performance dictionary for a specific ticker."""
         self.reload_latest_results()
+        age = round(self._last_loaded_age_days, 1) if self._last_loaded_age_days is not None else None
         sym = ticker.upper()
         if sym in self._stats_cache:
-            return self._stats_cache[sym]
+            res = dict(self._stats_cache[sym])
+            res["backtest_age_days"] = age
+            return res
         
         # Fallback if ticker has not been backtested yet
         return {
@@ -110,5 +118,6 @@ class BacktestStatsReader:
             "avg_return_pct": 0.0,
             "max_gain_pct": 0.0,
             "avg_days_held": 0.0,
-            "has_edge": False
+            "has_edge": False,
+            "backtest_age_days": age
         }
