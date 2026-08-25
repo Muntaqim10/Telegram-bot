@@ -154,5 +154,5 @@ class BlindSentimentAnalyzer:
                 "catalyst": "News Fetch Active",
                 "ai_thesis": "Technical momentum setup with dynamic risk management.",
                 "is_whale": False,
-                "verdict": "CONCORDANT"
+                "verdict": "NEUTRAL"
             }
