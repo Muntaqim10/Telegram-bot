@@ -16,6 +16,9 @@ class SignalPipeline:
         self.alerts = alerts
         self.donchian_strategy = donchian_strategy
         self.earnings_calendar = EarningsCalendar()
+        
+        from src.data.flashalpha_client import FlashAlphaClient
+        self.flashalpha = FlashAlphaClient()
 
     async def process_signal(self, signal: Dict[str, Any], spy_vwap_ratio: float = 1.0, session=None):
         """Passes the raw signal through AI filters before alerting."""
@@ -153,6 +156,25 @@ class SignalPipeline:
             log.warning(f"[{ticker}] Short alert suppressed: Heavy Bullish Call Flow.")
             return
 
+        # 4.5 FlashAlpha Institutional GEX Filter
+        fa_data = await self.flashalpha.get_gex_profile(ticker, expiration)
+        if fa_data:
+            call_wall = fa_data.get("call_wall", 0.0)
+            put_wall = fa_data.get("put_wall", 0.0)
+            
+            # Smart Money Filter Rules
+            if direction == "Long" and call_wall > 0 and signal["entry_price"] >= call_wall * 0.99 and signal["entry_price"] <= call_wall * 1.01:
+                log.warning(f"[{ticker}] Long alert suppressed by FlashAlpha: Price ({signal['entry_price']}) is hitting the Market Maker Call Wall ({call_wall}).")
+                return
+            elif direction == "Short" and put_wall > 0 and signal["entry_price"] <= put_wall * 1.01 and signal["entry_price"] >= put_wall * 0.99:
+                log.warning(f"[{ticker}] Short alert suppressed by FlashAlpha: Price ({signal['entry_price']}) is bouncing off the Market Maker Put Wall ({put_wall}).")
+                return
+                
+            # Embed wall context into the alert
+            if call_wall > 0 and put_wall > 0:
+                wall_text = f"🛡️ MM Walls: Call ${call_wall} | Put ${put_wall}"
+                final_warning_tag = f"{final_warning_tag} | {wall_text}" if final_warning_tag else wall_text
+                
         # Verdict handling
         strategy_suggestion = None
         iv_value = pricing_data.get("iv", 0.0)
