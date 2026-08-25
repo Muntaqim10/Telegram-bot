@@ -195,6 +195,9 @@ class DonchianSwingStrategy:
             "atr_14": atr,
             "stop_loss": stop_loss,
             "take_profit": take_profit,
+            "breakout_level": float(row["R_20d"]) if direction == "Long" else float(row["S_20d"]),
+            "donchian_high": float(row.get("R_20d", close)),
+            "donchian_low": float(row.get("S_20d", close)),
             "tf_confluence": f"Daily Donchian + SMA20/60 + CHOP({chop:.1f}) + RSI({rsi:.1f})"
         }
 

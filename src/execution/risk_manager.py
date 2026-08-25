@@ -62,40 +62,59 @@ class RiskManager:
         atr_distance = current_atr * self.atr_multiplier if current_atr > 0 else 0
         outcome = None
         
-        if direction == "Long":
-            # Check if Take Profit hit
-            if current_price >= take_profit:
-                profit_pct = (current_price - entry_price) / entry_price
-                outcome = {"status": "TP_HIT", "exit_price": current_price, "pnl": profit_pct}
+        # Track favorable movement
+        if direction == "Long" and current_price > entry_price:
+            pos["has_moved_favorably"] = True
+        elif direction == "Short" and current_price < entry_price:
+            pos["has_moved_favorably"] = True
 
-            # If price moves up, raise the stop
-            elif current_price <= pos["trailing_stop"]:
+        # Check thesis invalidation FIRST (Early exit if price reclaims/loses original breakout level after moving favorably)
+        invalidation_level = pos.get("invalidation_level")
+        if invalidation_level is not None and pos.get("has_moved_favorably", False):
+            if direction == "Long" and current_price < invalidation_level:
                 profit_pct = (current_price - entry_price) / entry_price
-                outcome = {"status": "STOPPED_OUT", "exit_price": current_price, "pnl": profit_pct}
-            else:
-                current_profit_pct = (current_price - entry_price) / entry_price
-                if atr_distance > 0 and current_profit_pct >= self.min_profit_pct:
-                    new_stop = current_price - atr_distance
-                    if new_stop > current_stop:
-                        pos["trailing_stop"] = new_stop
-                
-        elif direction == "Short":
-            # Check if Take Profit hit
-            if current_price <= take_profit:
+                outcome = {"status": "INVALIDATED", "exit_price": current_price, "pnl": profit_pct}
+                log.info(f"[{ticker}] THESIS INVALIDATED: Price (${current_price:.2f}) fell back below breakout level (${invalidation_level:.2f}). Exiting early.")
+            elif direction == "Short" and current_price > invalidation_level:
                 profit_pct = (entry_price - current_price) / entry_price
-                outcome = {"status": "TP_HIT", "exit_price": current_price, "pnl": profit_pct}
+                outcome = {"status": "INVALIDATED", "exit_price": current_price, "pnl": profit_pct}
+                log.info(f"[{ticker}] THESIS INVALIDATED: Price (${current_price:.2f}) rose back above breakdown level (${invalidation_level:.2f}). Exiting early.")
 
-            # Check if stopped out
-            elif current_price >= pos["trailing_stop"]:
-                profit_pct = (entry_price - current_price) / entry_price
-                outcome = {"status": "STOPPED_OUT", "exit_price": current_price, "pnl": profit_pct}
-            else:
-                # If price moves down, lower the stop
-                current_profit_pct = (entry_price - current_price) / entry_price
-                if atr_distance > 0 and current_profit_pct >= self.min_profit_pct:
-                    new_stop = current_price + atr_distance
-                    if new_stop < current_stop or current_stop == 0:
-                        pos["trailing_stop"] = new_stop
+        if outcome is None:
+            if direction == "Long":
+                # Check if Take Profit hit
+                if current_price >= take_profit:
+                    profit_pct = (current_price - entry_price) / entry_price
+                    outcome = {"status": "TP_HIT", "exit_price": current_price, "pnl": profit_pct}
+
+                # If price moves up, raise the stop
+                elif current_price <= pos["trailing_stop"]:
+                    profit_pct = (current_price - entry_price) / entry_price
+                    outcome = {"status": "STOPPED_OUT", "exit_price": current_price, "pnl": profit_pct}
+                else:
+                    current_profit_pct = (current_price - entry_price) / entry_price
+                    if atr_distance > 0 and current_profit_pct >= self.min_profit_pct:
+                        new_stop = current_price - atr_distance
+                        if new_stop > current_stop:
+                            pos["trailing_stop"] = new_stop
+                    
+            elif direction == "Short":
+                # Check if Take Profit hit
+                if current_price <= take_profit:
+                    profit_pct = (entry_price - current_price) / entry_price
+                    outcome = {"status": "TP_HIT", "exit_price": current_price, "pnl": profit_pct}
+
+                # Check if stopped out
+                elif current_price >= pos["trailing_stop"]:
+                    profit_pct = (entry_price - current_price) / entry_price
+                    outcome = {"status": "STOPPED_OUT", "exit_price": current_price, "pnl": profit_pct}
+                else:
+                    # If price moves down, lower the stop
+                    current_profit_pct = (entry_price - current_price) / entry_price
+                    if atr_distance > 0 and current_profit_pct >= self.min_profit_pct:
+                        new_stop = current_price + atr_distance
+                        if new_stop < current_stop or current_stop == 0:
+                            pos["trailing_stop"] = new_stop
 
         if outcome is not None:
             # Linear delta approximation (ESTIMATE ONLY - delta-only, no theta/gamma adjustment, no live option quote)
@@ -182,7 +201,8 @@ class RiskManager:
         take_profit: float = None,
         option_entry_price: float = None,
         option_entry_delta: float = None,
-        option_entry_theta: float = None
+        option_entry_theta: float = None,
+        invalidation_level: float = None
     ) -> dict:
         """
         Registers a new intraday runner position.
@@ -209,8 +229,11 @@ class RiskManager:
             "option_entry_price": option_entry_price,
             "option_entry_delta": option_entry_delta,
             "option_entry_theta": option_entry_theta,
+            "invalidation_level": invalidation_level,
+            "has_moved_favorably": False
         }
-        log.info(f"Position added for {ticker} ({direction}) at {entry_price}. Stop: {initial_stop:.2f}, TP: {tp:.2f}")
+        inval_str = f", Invalidation: {invalidation_level:.2f}" if invalidation_level is not None else ""
+        log.info(f"Position added for {ticker} ({direction}) at {entry_price}. Stop: {initial_stop:.2f}, TP: {tp:.2f}{inval_str}")
         return {"stop_loss": initial_stop, "take_profit": tp}
         
     def reset_daily(self):

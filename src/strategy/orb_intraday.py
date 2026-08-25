@@ -40,6 +40,7 @@ class ORBStrategy:
         Immediately fires breakout signal if CONFIRMATION_BARS <= 0,
         otherwise records a pending breakout to ensure price holds beyond level.
         """
+        signal_data["breakout_level"] = level
         if CONFIRMATION_BARS <= 0:
             self.active_signals[ticker] = {"direction": direction, "time": timestamp}
             signal_data.update({"direction": direction, "catalyst_type": catalyst_type, "tf_confluence": tf_confluence})
@@ -268,6 +269,8 @@ class ORBStrategy:
                 "pm_low": state.get("pm_low", price),
                 "crb_high": state.get("crb_high", price),
                 "crb_low": state.get("crb_low", price),
+                "orb_high": orb.get("high", price),
+                "orb_low": orb.get("low", price),
                 "hod_ratio": hod_ratio,
                 "lod_ratio": lod_ratio,
                 "volume": volume,

@@ -92,6 +92,19 @@ class SignalPipeline:
             
         log.info(f"✅ {ticker} {direction} Conviction: {conviction}. Dispatching Alert.")
 
+        # Extract breakout level for fast thesis invalidation (ORB high/low, Donchian high/low, CRB)
+        invalidation_level = signal.get("breakout_level")
+        if invalidation_level is None:
+            if direction == "Long":
+                invalidation_level = signal.get("orb_high") or signal.get("donchian_high") or signal.get("crb_high")
+            else:
+                invalidation_level = signal.get("orb_low") or signal.get("donchian_low") or signal.get("crb_low")
+        if invalidation_level is not None:
+            try:
+                invalidation_level = float(invalidation_level)
+            except (ValueError, TypeError):
+                invalidation_level = None
+
         # Extract natively computed SL/TP if they exist (e.g., from Donchian signals)
         stop_loss = signal.get("stop_loss")
         take_profit = signal.get("take_profit")
@@ -99,7 +112,7 @@ class SignalPipeline:
         if stop_loss is not None and take_profit is not None:
             risk_levels = self.risk_manager.add_position(
                 ticker, signal["entry_price"], initial_atr=0.0, direction=signal["direction"],
-                stop_loss=stop_loss, take_profit=take_profit
+                stop_loss=stop_loss, take_profit=take_profit, invalidation_level=invalidation_level
             )
         else:
             # ORB Signals: attempt to fetch cached real ATR, otherwise fallback with warning
@@ -109,11 +122,17 @@ class SignalPipeline:
             
             import pandas as pd
             if cached_atr and not pd.isna(cached_atr):
-                risk_levels = self.risk_manager.add_position(ticker, signal["entry_price"], initial_atr=cached_atr, direction=signal["direction"])
+                risk_levels = self.risk_manager.add_position(
+                    ticker, signal["entry_price"], initial_atr=cached_atr, 
+                    direction=signal["direction"], invalidation_level=invalidation_level
+                )
             else:
                 import logging
                 logging.getLogger("rallyhunter.pipeline").warning(f"[{ticker}] No cached daily ATR available. Falling back to default ATR=1.5")
-                risk_levels = self.risk_manager.add_position(ticker, signal["entry_price"], initial_atr=1.5, direction=signal["direction"])
+                risk_levels = self.risk_manager.add_position(
+                    ticker, signal["entry_price"], initial_atr=1.5, 
+                    direction=signal["direction"], invalidation_level=invalidation_level
+                )
 
         # 3.5 Tiered Velocity & Expected Move Magnitude Gate
         from src.data.dynamic_scanner import get_asset_tier_info
@@ -373,7 +392,8 @@ class SignalPipeline:
             otm_runner=raw_otm if otm_qualified else None,
             otm_qualified=otm_qualified,
             is_early_surge=is_early_surge,
-            early_surge_desc=early_surge_desc
+            early_surge_desc=early_surge_desc,
+            invalidation_level=invalidation_level
         )
 
         await self.alerts.dispatch_high_conviction(trade_signal)

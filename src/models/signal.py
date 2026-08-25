@@ -71,3 +71,6 @@ class TradeSignal:
     # Early Morning Surge High Alert Flag (>=3% Mega / >=10% Mid-Cap)
     is_early_surge: bool = False
     early_surge_desc: str = ""
+
+    # Fast Thesis Invalidation Level (Exit early on breakout failure)
+    invalidation_level: Optional[float] = None

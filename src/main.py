@@ -240,7 +240,7 @@ class IntradayEngine:
                         direction = self.risk_manager.active_positions[ticker]["direction"]
                         outcome = self.risk_manager.update_trailing_stop(ticker, price, current_atr, direction)
                         
-                        if outcome["status"] in ("STOPPED_OUT", "TP_HIT"):
+                        if outcome["status"] in ("STOPPED_OUT", "TP_HIT", "INVALIDATED"):
                             self.risk_manager.close_trade(
                                 ticker=ticker,
                                 outcome_status=outcome["status"],
