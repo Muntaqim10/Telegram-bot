@@ -27,6 +27,8 @@ class TradeSignal:
     # Exits
     stop_loss: float = 0.0
     take_profit: float = 0.0
+    asset_tier: str = ""
+    expected_move_pct: float = 0.0
     
     # Options / Pricing
     option_ask: float = 0.0

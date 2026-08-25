@@ -1,30 +1,27 @@
 import os
 import csv
 import sys
+import math
 import logging
 import asyncio
 import aiohttp
+import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 from src.strategy.donchian_daily import DonchianSwingStrategy
+from src.data.dynamic_scanner import get_asset_tier_info
+from src.utils.math_utils import black_scholes_price, black_scholes_delta, black_scholes_theta
 
 log = logging.getLogger(__name__)
 
 class BacktestEngine:
     """
-    Headless Backtesting Engine.
-    Downloads historical daily bars from Tradier, runs the Donchian 
-    swing strategy, and outputs signal outcomes to a CSV file.
-    
-    Note: does NOT currently apply FlashAlpha GEX filtering -- 
-    historical GEX data requires a premium FlashAlpha plan. This 
-    engine tests the base strategy only. See src/backtester_v2.py 
-    for the primary backtester used to generate ML training labels; 
-    this is a separate, standalone tool and the two are not 
-    guaranteed to produce matching win rates (see the tiebreak 
-    comment in run_backtest for one known methodological difference).
+    Headless Backtesting Engine with Black-Scholes 0.75 Delta ITM Options Modeling.
+    Downloads historical daily bars from Tradier, runs the Donchian strategy,
+    simulates realistic In-The-Money (~0.75 Delta) option pricing with daily Theta decay,
+    and outputs signal outcomes & option ROI to CSV.
     """
     def __init__(self, tradier_token: str):
         self.tradier_token = tradier_token
@@ -59,9 +56,32 @@ class BacktestEngine:
                     return df.dropna(subset=["close"])
         return pd.DataFrame()
 
-    async def run_backtest(self, tickers: list[str]):
-        """Runs the historical backtest and saves to CSV."""
-        log.info(f"Starting Backtest on {len(tickers)} tickers...")
+    def find_075_delta_strike(self, spot: float, direction: str, sigma: float, dte_days: int = 14) -> float:
+        """Finds the strike price closest to 0.75 Delta using Black-Scholes."""
+        T = max(1.0, dte_days) / 365.0
+        opt_type = "call" if direction == "Long" else "put"
+        
+        best_strike = spot
+        best_diff = 999.0
+        
+        # Test strikes from 15% ITM to 2% OTM in 0.5% increments
+        for pct in np.linspace(-0.15, 0.05, 60):
+            if opt_type == "call":
+                strike = spot * (1.0 + pct)
+            else:
+                strike = spot * (1.0 - pct)
+                
+            delta = abs(black_scholes_delta(spot, strike, T, r=0.045, sigma=sigma, option_type=opt_type))
+            diff = abs(delta - 0.75)
+            if diff < best_diff:
+                best_diff = diff
+                best_strike = round(strike, 2)
+                
+        return best_strike
+
+    async def run_backtest(self, tickers: list[str], max_holding_days: int = 10, lookback_days: int = 365):
+        """Runs the historical backtest simulating 0.75 Delta ITM options and saves to CSV."""
+        log.info(f"Starting 0.75 Delta ITM Options Backtest on {len(tickers)} tickers ({lookback_days} days lookback, max {max_holding_days}d hold)...")
         
         all_signals = []
         strategy = DonchianSwingStrategy(self.tradier_token)
@@ -69,70 +89,104 @@ class BacktestEngine:
         async with aiohttp.ClientSession() as session:
             for ticker in tickers:
                 log.info(f"Backtesting {ticker}...")
-                df = await self.fetch_historical_daily(session, ticker, days=365)
-                if df.empty:
+                df = await self.fetch_historical_daily(session, ticker, days=lookback_days)
+                if df.empty or len(df) < 60:
                     continue
                     
                 # Compute strategy indicators
                 df = strategy.compute_indicators(df)
                 
-                # Step through history (simulate walk-forward)
-                # In a real backtest, we would also query FlashAlpha historical GEX here.
-                # Since historical GEX requires premium FlashAlpha data, we will run the base 
-                # Donchian strategy to generate signals for the CSV.
+                # Compute 20-day historical annualized volatility
+                df["log_ret"] = np.log(df["close"] / df["close"].shift(1))
+                df["hist_vol_20"] = df["log_ret"].rolling(20).std() * math.sqrt(252)
+                df["hist_vol_20"] = df["hist_vol_20"].fillna(0.35).clip(lower=0.15, upper=1.20)
                 
-                for i in range(60, len(df)):
-                    # Provide data up to index i
+                for i in range(60, len(df) - 1):
                     window_df = df.iloc[:i+1]
                     signals = strategy.evaluate_signals(window_df, ticker)
                     
                     if signals:
                         for sig in signals:
-                            # Forward-looking calculation (Did it hit TP or SL?)
-                            tp = sig["take_profit"]
-                            sl = sig["stop_loss"]
+                            entry_spot = sig["entry_price"]
+                            tp_spot = sig["take_profit"]
+                            sl_spot = sig["stop_loss"]
                             direction = sig["direction"]
+                            opt_type = "call" if direction == "Long" else "put"
                             
-                            outcome = "PENDING"
+                            # Tiered Velocity Gate Check
+                            tier_info = get_asset_tier_info(ticker)
+                            expected_move_pct = (abs(tp_spot - entry_spot) / entry_spot) * 100.0 if entry_spot > 0 else 0.0
+                            if expected_move_pct < tier_info["min_move_pct"] and sig.get("z_vol", 0.0) < 2.0:
+                                continue # Filter out sluggish moves below velocity requirement
+                            
+                            sigma = float(window_df.iloc[-1].get("hist_vol_20", 0.35))
+                            initial_dte = 14 # 2-week ITM contract model
+                            
+                            # Find 0.75 Delta strike
+                            strike = self.find_075_delta_strike(entry_spot, direction, sigma, initial_dte)
+                            entry_opt_price = black_scholes_price(entry_spot, strike, initial_dte / 365.0, 0.045, sigma, opt_type)
+                            initial_delta = black_scholes_delta(entry_spot, strike, initial_dte / 365.0, 0.045, sigma, opt_type)
+                            initial_theta = black_scholes_theta(entry_spot, strike, initial_dte / 365.0, 0.045, sigma, opt_type)
+                            
+                            # Option-level profit targets
+                            option_tp_target = entry_opt_price * 1.40  # +40% target
+                            option_sl_target = entry_opt_price * 0.70  # -30% stop
+                            
+                            outcome = "EXPIRED"
                             days_held = 0
                             sig["same_day_ambiguous"] = False
+                            final_opt_price = entry_opt_price
+                            max_opt_gain_pct = 0.0
                             
-                            # Check next 20 days to see if it hit TP or SL
-                            for j in range(i+1, min(i+21, len(df))):
+                            for j in range(i+1, min(i + max_holding_days + 1, len(df))):
                                 days_held += 1
                                 future_high = df.iloc[j]["high"]
                                 future_low = df.iloc[j]["low"]
+                                future_close = df.iloc[j]["close"]
+                                rem_dte = max(0.5, initial_dte - days_held)
                                 
-                                # ASSUMPTION: when a single day's high/low range touches BOTH 
-                                # stop-loss and take-profit, we cannot know from daily OHLC data 
-                                # which was hit first intraday. We conservatively assume 
-                                # stop-loss hits first (worst-case ordering). This differs from 
-                                # backtester_v2.py, which checks a single closing price rather 
-                                # than the day's full range -- the two engines are NOT expected 
-                                # to produce identical win rates on the same data, and that is 
-                                # expected, not a bug.
-                                if direction == "Long":
-                                    if future_low <= sl and future_high >= tp:
-                                        sig["same_day_ambiguous"] = True
-                                else:
-                                    if future_high >= sl and future_low <= tp:
-                                        sig["same_day_ambiguous"] = True
+                                # Best and worst intraday option prices on day j
+                                best_spot = future_high if direction == "Long" else future_low
+                                worst_spot = future_low if direction == "Long" else future_high
                                 
-                                if direction == "Long":
-                                    if future_low <= sl:
-                                        outcome = "LOSS"
-                                        break
-                                    elif future_high >= tp:
-                                        outcome = "WIN"
-                                        break
+                                best_opt_price = black_scholes_price(best_spot, strike, rem_dte / 365.0, 0.045, sigma, opt_type)
+                                worst_opt_price = black_scholes_price(worst_spot, strike, rem_dte / 365.0, 0.045, sigma, opt_type)
+                                close_opt_price = black_scholes_price(future_close, strike, rem_dte / 365.0, 0.045, sigma, opt_type)
+                                
+                                gain_pct = (best_opt_price - entry_opt_price) / entry_opt_price
+                                if gain_pct > max_opt_gain_pct:
+                                    max_opt_gain_pct = gain_pct
+                                    
+                                hit_win = (best_opt_price >= option_tp_target) or (future_high >= tp_spot if direction == "Long" else future_low <= tp_spot)
+                                hit_loss = (worst_opt_price <= option_sl_target) or (future_low <= sl_spot if direction == "Long" else future_high >= sl_spot)
+                                
+                                if hit_win and hit_loss:
+                                    sig["same_day_ambiguous"] = True
+                                    outcome = "LOSS" # Conservative tiebreak
+                                    final_opt_price = option_sl_target
+                                    break
+                                elif hit_loss:
+                                    outcome = "LOSS"
+                                    final_opt_price = worst_opt_price
+                                    break
+                                elif hit_win:
+                                    outcome = "WIN"
+                                    final_opt_price = best_opt_price
+                                    break
                                 else:
-                                    if future_high >= sl:
-                                        outcome = "LOSS"
-                                        break
-                                    elif future_low <= tp:
-                                        outcome = "WIN"
-                                        break
-                                        
+                                    final_opt_price = close_opt_price
+                                    
+                            opt_pnl_pct = ((final_opt_price - entry_opt_price) / entry_opt_price) * 100.0
+                            
+                            sig["asset_tier"] = tier_info["tier"]
+                            sig["expected_move_pct"] = round(expected_move_pct, 1)
+                            sig["option_strike"] = strike
+                            sig["option_entry_price"] = round(entry_opt_price, 2)
+                            sig["option_final_price"] = round(final_opt_price, 2)
+                            sig["option_pnl_pct"] = round(opt_pnl_pct, 1)
+                            sig["max_gain_pct"] = round(max_opt_gain_pct * 100.0, 1)
+                            sig["initial_delta"] = round(initial_delta, 2)
+                            sig["initial_theta"] = round(initial_theta, 4)
                             sig["outcome"] = outcome
                             sig["days_held"] = days_held
                             sig["backtest_date"] = window_df.index[-1].strftime("%Y-%m-%d")
@@ -140,36 +194,59 @@ class BacktestEngine:
                             
         # Write to CSV
         if all_signals:
-            filename = os.path.join(self.results_dir, f"backtest_donchian_{datetime.now().strftime('%Y%m%d_%H%M')}.csv")
-            keys = ["backtest_date", "ticker", "direction", "catalyst_type", "entry_price", "stop_loss", "take_profit", "outcome", "days_held", "same_day_ambiguous", "z_vol", "rsi_14", "chop_14"]
+            filename = os.path.join(self.results_dir, f"backtest_itm_075delta_{datetime.now().strftime('%Y%m%d_%H%M')}.csv")
+            keys = [
+                "backtest_date", "ticker", "asset_tier", "expected_move_pct", "direction", "catalyst_type", "entry_price", "option_strike",
+                "initial_delta", "initial_theta", "option_entry_price", "option_final_price", "option_pnl_pct",
+                "max_gain_pct", "outcome", "days_held", "same_day_ambiguous", "z_vol", "rsi_14", "chop_14"
+            ]
             
             with open(filename, 'w', newline='') as output_file:
                 dict_writer = csv.DictWriter(output_file, fieldnames=keys, extrasaction='ignore')
                 dict_writer.writeheader()
                 dict_writer.writerows(all_signals)
                 
-            log.info(f"✅ Backtest complete! Exported {len(all_signals)} signals to {filename}")
+            log.info(f"✅ Backtest complete! Exported {len(all_signals)} trades to {filename}")
             
-            # Print quick stats
+            # Print performance analytics
             wins = sum(1 for s in all_signals if s["outcome"] == "WIN")
             losses = sum(1 for s in all_signals if s["outcome"] == "LOSS")
-            total = wins + losses
-            if total > 0:
-                win_rate = (wins / total) * 100
-                log.info(f"📊 Strategy Win Rate: {win_rate:.1f}% ({wins} W / {losses} L)")
-                ambiguous_count = sum(1 for s in all_signals if s.get("same_day_ambiguous"))
-                log.info(f"⚠️ {ambiguous_count} of {total} trades had same-day TP/SL ambiguity (resolved as LOSS)")
+            expired = sum(1 for s in all_signals if s["outcome"] == "EXPIRED")
+            total = len(all_signals)
+            
+            total_wins_pnl = sum(s["option_pnl_pct"] for s in all_signals if s["outcome"] == "WIN")
+            total_losses_pnl = abs(sum(s["option_pnl_pct"] for s in all_signals if s["outcome"] in ("LOSS", "EXPIRED")))
+            profit_factor = (total_wins_pnl / total_losses_pnl) if total_losses_pnl > 0 else 99.0
+            avg_pnl = sum(s["option_pnl_pct"] for s in all_signals) / total if total > 0 else 0.0
+            ambiguous_count = sum(1 for s in all_signals if s.get("same_day_ambiguous"))
+            
+            print("\n" + "="*60)
+            print("  --- 0.75 DELTA ITM OPTIONS BACKTEST SUMMARY ---")
+            print("="*60)
+            print(f"Total Signals Generated: {total}")
+            print(f"Wins: {wins} | Losses: {losses} | Expired: {expired}")
+            if (wins + losses) > 0:
+                print(f"Win Rate (Wins / Decided): {(wins / (wins + losses))*100:.1f}%")
+            print(f"Overall Strategy Win Rate: {(wins / total)*100:.1f}%")
+            print(f"Average Option Return per Trade: {avg_pnl:+.1f}%")
+            print(f"Profit Factor: {profit_factor:.2f}")
+            print(f"Same-day Ambiguous Cases: {ambiguous_count} (conservatively counted as LOSS)")
+            print("="*60 + "\n")
         else:
             log.info("No signals generated during backtest.")
 
 if __name__ == "__main__":
     from dotenv import load_dotenv
-    load_dotenv(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.env")))
+    load_dotenv(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.env")))
     
     logging.basicConfig(level=logging.INFO)
-    
     token = os.getenv("TRADIER_ACCESS_TOKEN")
     
     engine = BacktestEngine(token)
-    # Test on a small basket
-    asyncio.run(engine.run_backtest(["AAPL", "TSLA", "NVDA", "SPY", "QQQ"]))
+    # High-volatility & Mega-cap basket
+    basket = [
+        "NVDA", "TSLA", "AAPL", "SPY", "QQQ", "AMD", "META", "AMZN", 
+        "MSFT", "GOOGL", "AVGO", "PLTR", "ARM", "CRWD", "NFLX", "SHOP"
+    ]
+    asyncio.run(engine.run_backtest(basket, max_holding_days=10, lookback_days=365))
+

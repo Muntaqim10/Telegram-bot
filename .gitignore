@@ -9,3 +9,9 @@ __pycache__/
 # Logs
 logs/
 *.log
+
+# Scratch & Backtests
+scratch/
+scratch_*.py
+backtest_results/
+*.csv

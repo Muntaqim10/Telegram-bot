@@ -23,6 +23,32 @@ CANDIDATE_POOL = [
     "GME", "AMC", "DJT", "RIVN"
 ]
 
+MEGA_CAP_TICKERS = {
+    "SPY", "QQQ", "IWM", "GLD", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AVGO", "AMD", "NFLX"
+}
+
+def get_asset_tier_info(ticker: str) -> dict:
+    """
+    Returns the classification tier and minimum expected move threshold for a ticker.
+    - Mega-Caps / Core Indices: Minimum 4.0% - 5.0% expected move
+    - High-Beta Mid-Caps & Runners: Minimum 18.0% - 30.0% expected move
+    """
+    sym = ticker.upper()
+    if sym in MEGA_CAP_TICKERS:
+        return {
+            "tier": "MEGA-CAP",
+            "min_move_pct": 4.5,
+            "label": "🏢 Mega-Cap Leader",
+            "target_desc": "5%+ Expansion Target"
+        }
+    else:
+        return {
+            "tier": "MID-CAP",
+            "min_move_pct": 18.0,
+            "label": "🚀 High-Beta Mid-Cap Runner",
+            "target_desc": "20-30%+ Explosive Target"
+        }
+
 class DynamicTickerScanner:
     """
     Scans the broad market in real-time via Tradier API to identify tickers 

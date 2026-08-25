@@ -44,13 +44,16 @@ def format_telegram_alert(signal: TradeSignal) -> str:
     # Options target line (only if we have real data)
     options_lines = ""
     timeframe = signal.timeframe_target.upper()
-    if timeframe == "SWING" and signal.target_strike:
-        option_details = f"{signal.expiry} ${signal.target_strike} {signal.option_type}"
-        options_lines = f"🎯 <b>Target (Swing):</b> <code>{option_details}</code>\n"
-    elif timeframe == "INTRADAY" and signal.intraday_strike:
-        option_details = f"{signal.intraday_expiry} ${signal.intraday_strike} {signal.intraday_option_type}"
-        options_lines = f"⚡ <b>Target (Intraday):</b> <code>{option_details}</code>\n"
-        if signal.delta > 0:
+    strike_to_use = signal.target_strike or signal.intraday_strike
+    expiry_to_use = signal.expiry or signal.intraday_expiry
+    opt_type_to_use = signal.option_type or signal.intraday_option_type
+
+    if strike_to_use and expiry_to_use:
+        prefix = "🎯 <b>Target (Swing):</b>" if timeframe == "SWING" else "⚡ <b>Target (Weekly):</b>"
+        option_details = f"{expiry_to_use} ${strike_to_use} {opt_type_to_use}"
+        options_lines = f"{prefix} <code>{option_details}</code>\n"
+        
+        if abs(signal.delta) > 0:
             iv_str = f"{signal.iv*100:.1f}%" if signal.iv > 0 else "N/A"
             options_lines += "⚖️ <b>Greeks & Premium:</b>\n"
             options_lines += f"   • Premium: <code>${signal.option_ask:.2f}</code>\n"
@@ -74,10 +77,16 @@ def format_telegram_alert(signal: TradeSignal) -> str:
     
     flow_line = f"💵 <b>Options Flow:</b> <code>{signal.flow_bias}</code> (${signal.call_dollar_flow:,.0f} Calls / ${signal.put_dollar_flow:,.0f} Puts)\n"
     
+    tier_line = ""
+    if getattr(signal, "asset_tier", ""):
+        move_str = f" (+{signal.expected_move_pct:.1f}% Move)" if getattr(signal, "expected_move_pct", 0) > 0 else ""
+        tier_line = f"🏷️ <b>Asset Tier:</b> {signal.asset_tier}{move_str}\n"
+
     msg = (
         f"{strategy_header}\n"
         f"Asset: {ticker_code} ({action_label})\n"
         f"✅ <b>STATUS:</b> CONFIRMED\n"
+        f"{tier_line}"
         f"{warning_line}\n"
         f"{earnings_line}"
         f"{options_lines}"

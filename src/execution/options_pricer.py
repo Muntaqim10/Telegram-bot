@@ -2,6 +2,7 @@ import aiohttp
 import logging
 import asyncio
 import time
+from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 from src.data.iv_history import IVHistoryTracker
 
@@ -9,9 +10,9 @@ log = logging.getLogger(__name__)
 
 class OptionsPricer:
     """
-    Evaluates real-time options chains to ensure the contract is not overpriced,
-    meets liquidity thresholds, is affordable for small accounts, and mathematically
-    viable based on projected take-profit (breakeven gate).
+    Evaluates real-time options chains to ensure the contract is high conviction,
+    targets In-The-Money (ITM ~0.75 Delta) for high intrinsic leverage and low theta,
+    meets tight liquidity thresholds, and mathematically viable based on take-profit.
     """
     def __init__(self, tradier_token: str):
         self.token = tradier_token
@@ -21,6 +22,54 @@ class OptionsPricer:
         }
         self._chain_cache = {}
         self.iv_tracker = IVHistoryTracker()
+
+    async def get_target_expiration(self, ticker: str, min_dte: int = 1, max_dte: int = 30, session=None) -> str:
+        """
+        Dynamically queries Tradier for available option expirations for the ticker across 1-30 DTE.
+        Handles frequent 3-day / Mon-Wed-Fri short-cycle expirations (e.g. NVDA, SPY, QQQ, TSLA)
+        by selecting the nearest active expiration with DTE >= min_dte.
+        """
+        url = f"https://api.tradier.com/v1/markets/options/expirations?symbol={ticker}&includeAllRoots=true"
+        try:
+            expirations_list = []
+            if session:
+                async with session.get(url, headers=self.headers, timeout=5.0) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        dates = data.get("expirations", {}).get("date", [])
+                        expirations_list = dates if isinstance(dates, list) else [dates] if dates else []
+            else:
+                async with aiohttp.ClientSession() as s:
+                    async with s.get(url, headers=self.headers, timeout=5.0) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            dates = data.get("expirations", {}).get("date", [])
+                            expirations_list = dates if isinstance(dates, list) else [dates] if dates else []
+            
+            today = datetime.now().date()
+            valid_exps = []
+            for exp_str in expirations_list:
+                try:
+                    exp_dt = datetime.strptime(exp_str, "%Y-%m-%d").date()
+                    dte = (exp_dt - today).days
+                    if min_dte <= dte <= max_dte:
+                        valid_exps.append((dte, exp_str))
+                except ValueError:
+                    continue
+            
+            if valid_exps:
+                valid_exps.sort(key=lambda x: x[0])
+                log.info(f"[{ticker}] Dynamic expiration selected: {valid_exps[0][1]} ({valid_exps[0][0]} DTE)")
+                return valid_exps[0][1]
+        except Exception as e:
+            log.warning(f"Failed to fetch dynamic expirations for {ticker}: {e}. Falling back to weekly Friday.")
+            
+        # Fallback to weekly Friday
+        now = datetime.now()
+        target_date = now + timedelta(days=min_dte + 1)
+        days_to_friday = (4 - target_date.weekday()) % 7
+        target_expiration = target_date + timedelta(days=days_to_friday)
+        return target_expiration.strftime("%Y-%m-%d")
         
     async def find_optimal_contract(
         self, ticker: str, expiration: str, target_strike: float, 
@@ -191,14 +240,19 @@ class OptionsPricer:
                 log.warning(f"No {option_type} contracts found for {ticker} at {expiration}.")
                 return result
 
-            # Sort contracts by distance to target_strike (preferring strikes slightly closer to ITM if equidistant)
-            # For calls: prefer lower strike (closer to ITM) if distance is equal. For puts: prefer higher.
+            # Sort contracts by proximity to target 0.75 Delta (In-The-Money high conviction)
             def sort_key(c):
-                s = float(c.get("strike", 0.0))
-                dist = abs(s - target_strike)
-                # Penalty for being further OTM to break ties
-                otm_penalty = s if option_type.lower() == "call" else -s 
-                return (dist, otm_penalty)
+                greeks = c.get("greeks", {}) or {}
+                delta = abs(greeks.get("delta", 0.0) or 0.0)
+                if delta > 0:
+                    # Primary preference: closest to 0.75 Delta (ITM)
+                    delta_diff = abs(delta - 0.75)
+                    return (0, delta_diff)
+                else:
+                    # Fallback if no Greeks: strike distance to estimated ITM strike (5% ITM)
+                    s = float(c.get("strike", 0.0))
+                    itm_target = target_strike * 0.95 if option_type.lower() == "call" else target_strike * 1.05
+                    return (1, abs(s - itm_target))
 
             valid_contracts.sort(key=sort_key)
 
@@ -214,21 +268,22 @@ class OptionsPricer:
                 vol = contract.get("volume", 0) or 0
                 oi = contract.get("open_interest", 0) or 0
 
-                # Gate 1: Liquidity Filter
+                # Gate 1: Liquidity Filter (Tight spread: max 18% spread ratio OR max $0.35 spread for liquid high-dollar stocks)
                 spread = ask - bid
                 spread_ratio = spread / mid if mid > 0 else 1.0
-                is_liquid = (oi >= 50 or vol >= 20) and (spread_ratio <= 0.30)
+                is_tight_spread = (spread_ratio <= 0.18) or (spread <= 0.35 and mid >= 3.0)
+                is_liquid = (oi >= 50 or vol >= 20) and is_tight_spread
                 
                 if not is_liquid:
-                    continue # Skip illiquid contracts entirely
+                    continue # Skip illiquid / wide spread contracts entirely
                     
                 # If it's liquid, save it as a fallback in case nothing passes affordability/breakeven
                 if not fallback_contract:
                     fallback_contract = contract
 
-                # Gate 2: Affordability Filter
+                # Gate 2: Affordability Filter (Sized for ITM intrinsic value)
                 import os
-                default_max = max(2.50, strike * 0.015) # Dynamic: allows up to $7.50 on a $500 stock, or $2.50 on a $50 stock
+                default_max = max(15.0, strike * 0.10) # Allows up to $15 on volatile tickers to accommodate ITM intrinsic value
                 max_premium = float(os.getenv("MAX_PREMIUM_DOLLARS", str(default_max)))
                 
                 if ask > max_premium:
@@ -262,7 +317,7 @@ class OptionsPricer:
                 else:
                     # Literally zero liquid contracts found
                     result["verdict"] = "POOR VALUE"
-                    result["reason"] = "No liquid options available for this setup."
+                    result["reason"] = "No liquid options with tight bid-ask spread available for this setup."
                     return result
 
             # Extract Data for the final contract
@@ -300,33 +355,40 @@ class OptionsPricer:
             result["dollar_flow"] = dollar_flow
             
             if midpoint > 0:
-                result["premium_ratio"] = result["delta"] / midpoint
+                result["premium_ratio"] = abs(result["delta"]) / midpoint
+                result["theta_ratio"] = abs(result["theta"]) / midpoint
+            else:
+                result["premium_ratio"] = 0.0
+                result["theta_ratio"] = 0.0
             
             # Evaluation Logic for contracts that passed the hard gates
             if result["verdict"] == "UNKNOWN": # i.e. it wasn't flagged as UNTRADEABLE AT SIZE
-                if iv_rank is not None:
+                delta_abs = abs(result.get("delta", 0.0))
+                theta_ratio = result.get("theta_ratio", 0.0)
+                
+                # High Conviction In-The-Money (ITM) Greek Gates (Target ~0.75 Delta, Accept 0.60 - 0.90 Delta)
+                if delta_abs > 0 and (delta_abs < 0.60 or delta_abs > 0.90):
+                    result["verdict"] = "POOR VALUE"
+                    result["reason"] = f"Delta ({result['delta']:.2f}) outside target ITM range (0.60 - 0.90 Delta). Target is ~0.75 Delta."
+                elif theta_ratio > 0.15:
+                    result["verdict"] = "POOR VALUE"
+                    result["reason"] = f"Excessive Theta decay (${abs(result['theta']):.2f}/day, {theta_ratio*100:.1f}% of premium). Maximum allowed is 15%/day."
+                elif iv_rank is not None:
                     result["iv_rank"] = iv_rank
                     if iv_rank > 80:
                         result["verdict"] = "OVERPRICED - HIGH IV RANK"
                         result["reason"] = f"IV Rank is {iv_rank:.0f}/100 for this ticker -- historically expensive."
-                    elif result["premium_ratio"] < 0.10 and midpoint > 1.0:
-                        result["verdict"] = "POOR VALUE"
-                        result["reason"] = f"Paying ${midpoint:.2f} for only {result['delta']:.2f} Delta."
                     else:
                         result["verdict"] = "FAIR VALUE"
-                        result["reason"] = "Pricing, liquidity, and breakeven are optimal."
+                        result["reason"] = "Pricing, tight spread liquidity, 0.75 Delta ITM Greeks, and breakeven are optimal."
                 else:
-                    # Not enough IV history yet for this ticker -- fall back to the 
-                    # old absolute threshold rather than skip the check entirely
+                    # Not enough IV history yet for this ticker -- fall back to absolute threshold
                     if result["iv"] > 1.20:
                         result["verdict"] = "OVERPRICED - HIGH IV"
                         result["reason"] = f"IV is bloated at {result['iv']*100:.1f}%. High risk of IV Crush."
-                    elif result["premium_ratio"] < 0.10 and midpoint > 1.0:
-                        result["verdict"] = "POOR VALUE"
-                        result["reason"] = f"Paying ${midpoint:.2f} for only {result['delta']:.2f} Delta."
                     else:
                         result["verdict"] = "FAIR VALUE"
-                        result["reason"] = "Pricing, liquidity, and breakeven are optimal."
+                        result["reason"] = "Pricing, tight spread liquidity, 0.75 Delta ITM Greeks, and breakeven are optimal."
                 
             return result
                 

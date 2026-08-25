@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, Any
 from src.models.signal import TradeSignal
 from src.data.earnings_calendar import EarningsCalendar
@@ -111,14 +111,29 @@ class SignalPipeline:
                 logging.getLogger("rallyhunter.pipeline").warning(f"[{ticker}] No cached daily ATR available. Falling back to default ATR=1.5")
                 risk_levels = self.risk_manager.add_position(ticker, signal["entry_price"], initial_atr=1.5, direction=signal["direction"])
 
-        # 4. Options Pricing Check (Targeting ~45 days out expiration for short-term breakouts)
-        now = datetime.now()
-        target_date = now + timedelta(days=45)
-        days_to_friday = (4 - target_date.weekday()) % 7
-        target_expiration = target_date + timedelta(days=days_to_friday)
-        expiration = target_expiration.strftime("%Y-%m-%d")
+        # 3.5 Tiered Velocity & Expected Move Magnitude Gate
+        from src.data.dynamic_scanner import get_asset_tier_info
+        tier_info = get_asset_tier_info(ticker)
+        entry_p = float(signal["entry_price"])
+        tp_p = float(risk_levels["take_profit"])
+        expected_move_pct = (abs(tp_p - entry_p) / entry_p) * 100.0 if entry_p > 0 else 0.0
+        
+        min_required_move = tier_info["min_move_pct"]
+        z_vol_val = signal.get("z_vol", 0.0)
+        if isinstance(z_vol_val, str):
+            try: z_vol_val = float(z_vol_val)
+            except: z_vol_val = 0.0
 
-        target_strike = float(round(signal["entry_price"])) # Target At-The-Money (ATM)
+        if expected_move_pct < min_required_move and z_vol_val < 2.0:
+            log.warning(
+                f"[{ticker}] Alert suppressed by Velocity Gate: {tier_info['tier']} expected move ({expected_move_pct:.1f}%) "
+                f"is below the minimum required threshold ({min_required_move}%)."
+            )
+            return
+
+        # 4. Options Pricing Check (Dynamic Expirations: 1-30 DTE handling 3-day / short-cycle expirations on NVDA/SPY/QQQ & weeklies)
+        expiration = await self.options_pricer.get_target_expiration(ticker, min_dte=1, max_dte=30, session=session)
+        target_strike = float(round(signal["entry_price"])) # Spot reference (OptionsPricer optimizes to ~0.75 Delta ITM)
 
         opt_type = "put" if direction == "Short" else "call"
 
@@ -217,6 +232,8 @@ class SignalPipeline:
             strategy_suggestion=strategy_suggestion,
             stop_loss=risk_levels["stop_loss"],
             take_profit=risk_levels["take_profit"],
+            asset_tier=tier_info.get("label", ""),
+            expected_move_pct=expected_move_pct,
             option_ask=pricing_data.get("ask", 0.0),
             option_bid=pricing_data.get("bid", 0.0),
             option_tp_pct=0.50,
