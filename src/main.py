@@ -83,6 +83,9 @@ class IntradayEngine:
         from src.execution.signal_pipeline import SignalPipeline
         self.options_pricer = OptionsPricer(TRADIER_TOKEN)
         self.news_fetcher = NewsFetcher()
+        from src.data.hourly_snapshot import HourlySnapshotEngine
+        self.snapshot_engine = HourlySnapshotEngine(TRADIER_TOKEN)
+        self._last_snapshot_hour = -1
         self.signal_pipeline = SignalPipeline(
             self.news_fetcher,
             self.sentiment_analyzer,
@@ -164,6 +167,24 @@ class IntradayEngine:
                 log.error(f"Daily reset loop error: {e}")
             await asyncio.sleep(30)  # Check every 30 seconds
             
+    async def run_hourly_snapshot_loop(self):
+        """Dispatches an hourly market breadth and momentum pulse card to Telegram during trading hours."""
+        log.info("⏱️ [HOURLY SNAPSHOT] Starting hourly snapshot loop...")
+        while True:
+            try:
+                now = pd.Timestamp.now(tz="US/Eastern")
+                # Run between 9:30 AM and 4:00 PM EST at the top of each hour (10:00, 11:00, 12:00, 13:00, 14:00, 15:00, 16:00)
+                if (9 <= now.hour <= 16) and now.minute == 0 and self._last_snapshot_hour != now.hour:
+                    session = await self.get_shared_session()
+                    card = await self.snapshot_engine.generate_market_snapshot(session=session)
+                    if card:
+                        await self.alerts.dispatch_informational(card)
+                        self._last_snapshot_hour = now.hour
+                        log.info(f"⏱️ [HOURLY SNAPSHOT] Dispatched market pulse snapshot for {now.strftime('%I:%M %p EST')}")
+            except Exception as e:
+                log.error(f"Hourly snapshot loop error: {e}")
+            await asyncio.sleep(30)
+
     async def _dispatch_signal_task(self, signal: dict, spy_vwap_ratio: float):
         """Background wrapper to process signals without blocking the tick stream loop."""
         ticker = signal["ticker"]
@@ -298,6 +319,7 @@ async def lifespan(app: FastAPI):
     app.state.extended_task = asyncio.create_task(app.state.engine.run_extended_hours_scanner_loop())
     app.state.scanner_task = asyncio.create_task(app.state.engine.run_dynamic_scanner_loop())
     app.state.donchian_task = asyncio.create_task(app.state.engine.run_donchian_scanner_loop())
+    app.state.snapshot_task = asyncio.create_task(app.state.engine.run_hourly_snapshot_loop())
     app.state.daily_reset_task = asyncio.create_task(app.state.engine.run_daily_reset_loop())
     app.state.stream_task = asyncio.create_task(app.state.engine.market_stream.run())
     app.state.processor_task = asyncio.create_task(app.state.engine.process_events())
@@ -310,6 +332,7 @@ async def lifespan(app: FastAPI):
     app.state.extended_task.cancel()
     app.state.scanner_task.cancel()
     app.state.donchian_task.cancel()
+    app.state.snapshot_task.cancel()
     app.state.daily_reset_task.cancel()
     app.state.stream_task.cancel()
     app.state.processor_task.cancel()

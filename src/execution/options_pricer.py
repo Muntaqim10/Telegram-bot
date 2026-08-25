@@ -61,12 +61,16 @@ class OptionsPricer:
                 valid_exps.sort(key=lambda x: x[0])
                 log.info(f"[{ticker}] Dynamic expiration selected: {valid_exps[0][1]} ({valid_exps[0][0]} DTE)")
                 return valid_exps[0][1]
+            elif expirations_list:
+                # If nothing in [min_dte, max_dte], select the nearest available real exchange expiration
+                log.info(f"[{ticker}] No expirations in {min_dte}-{max_dte} DTE. Using nearest real exchange date: {expirations_list[0]}")
+                return expirations_list[0]
         except Exception as e:
-            log.warning(f"Failed to fetch dynamic expirations for {ticker}: {e}. Falling back to weekly Friday.")
+            log.warning(f"Failed to fetch dynamic expirations for {ticker}: {e}.")
             
-        # Fallback to weekly Friday
+        # Absolute last resort fallback: next Friday
         now = datetime.now()
-        target_date = now + timedelta(days=min_dte + 1)
+        target_date = now + timedelta(days=max(1, min_dte))
         days_to_friday = (4 - target_date.weekday()) % 7
         target_expiration = target_date + timedelta(days=days_to_friday)
         return target_expiration.strftime("%Y-%m-%d")
@@ -322,6 +326,8 @@ class OptionsPricer:
 
             # Extract Data for the final contract
             result["target_strike"] = float(final_contract.get("strike", 0.0))
+            result["occ_symbol"] = final_contract.get("symbol", "")
+            result["expiration"] = final_contract.get("expiration_date", expiration)
             result["bid"] = final_contract.get("bid", 0.0)
             result["ask"] = final_contract.get("ask", 0.0)
             

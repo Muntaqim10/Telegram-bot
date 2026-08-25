@@ -17,6 +17,8 @@ class TradeSignal:
     conviction: str = "🔴 LOW"  # Tiered: 🟢 HIGH / 🟡 MEDIUM / 🔴 LOW
     context_score: str = ""
     catalyst: str = ""
+    ai_thesis: str = ""
+    historical_edge: str = ""
     
     # Real Technicals (computed from live data)
     vwap_ratio: float = 1.0
@@ -44,6 +46,7 @@ class TradeSignal:
     net_gex: float = 0.0
     
     # Expiration details
+    occ_symbol: str = ""
     expiry: Optional[str] = None
     target_strike: Optional[float] = None
     option_type: Optional[str] = None

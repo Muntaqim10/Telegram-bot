@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Dict, Any
 from src.models.signal import TradeSignal
 from src.data.earnings_calendar import EarningsCalendar
+from src.backtest.stats_reader import BacktestStatsReader
 
 log = logging.getLogger("rallyhunter.pipeline")
 
@@ -16,6 +17,7 @@ class SignalPipeline:
         self.alerts = alerts
         self.donchian_strategy = donchian_strategy
         self.earnings_calendar = EarningsCalendar()
+        self.backtest_reader = BacktestStatsReader()
         
         from src.data.flashalpha_client import FlashAlphaClient
         self.flashalpha = FlashAlphaClient()
@@ -212,6 +214,38 @@ class SignalPipeline:
             )
             log.info(f"[{ticker}] High IV ({iv_pct:.0f}%). Tagging with spread suggestion, not blocking.")
 
+        # 4.6 DeepSeek Multi-Domain Synthesis (News + Math + Empirical Backtest Stats)
+        bt_stats = self.backtest_reader.get_ticker_stats(ticker)
+        math_context = {
+            "expected_move_pct": expected_move_pct,
+            "target_strike": actual_strike,
+            "option_type": opt_type.upper(),
+            "option_ask": pricing_data.get("ask", 0.0),
+            "delta": pricing_data.get("delta", 0.75)
+        }
+        
+        synth_result = await self.sentiment_analyzer.synthesize_catalyst_and_edge(
+            ticker=ticker,
+            direction=direction,
+            headlines=headlines,
+            backtest_stats=bt_stats,
+            math_context=math_context
+        )
+        
+        catalyst = synth_result.get("catalyst", catalyst)
+        ai_thesis = synth_result.get("ai_thesis", "")
+        if synth_result.get("is_whale"):
+            is_whale = True
+            
+        hist_edge_str = ""
+        if bt_stats.get("total_trades", 0) > 0:
+            hist_edge_str = (
+                f"{bt_stats['win_rate']}% Win Rate ({bt_stats['total_trades']} trades | "
+                f"+{bt_stats['avg_return_pct']}% Avg ROI | Max +{bt_stats['max_gain_pct']}%)"
+            )
+        else:
+            hist_edge_str = "Initial Live Tracking (Broad Watchlist Dynamic Scan)"
+
         # 5. Build TradeSignal Object
         trade_signal = TradeSignal(
             ticker=ticker,
@@ -226,6 +260,8 @@ class SignalPipeline:
             conviction=conviction,
             context_score=signal.get("tf_confluence", "Intraday ORB"),
             catalyst=catalyst,
+            ai_thesis=ai_thesis,
+            historical_edge=hist_edge_str,
             vwap_ratio=signal.get("vwap_ratio", 1.0),
             volume=signal.get("volume", 0.0),
             warning_tag=final_warning_tag,
@@ -245,8 +281,9 @@ class SignalPipeline:
             call_dollar_flow=pricing_data.get("call_dollar_flow", 0.0),
             put_dollar_flow=pricing_data.get("put_dollar_flow", 0.0),
             net_gex=pricing_data.get("net_gex", 0.0),
-            expiry=expiration,
-            intraday_expiry=expiration,
+            occ_symbol=pricing_data.get("occ_symbol", ""),
+            expiry=pricing_data.get("expiration", expiration),
+            intraday_expiry=pricing_data.get("expiration", expiration),
             target_strike=actual_strike,
             intraday_strike=actual_strike,
             option_type=opt_type.upper(),

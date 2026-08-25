@@ -52,6 +52,8 @@ def format_telegram_alert(signal: TradeSignal) -> str:
         prefix = "🎯 <b>Target (Swing):</b>" if timeframe == "SWING" else "⚡ <b>Target (Weekly):</b>"
         option_details = f"{expiry_to_use} ${strike_to_use} {opt_type_to_use}"
         options_lines = f"{prefix} <code>{option_details}</code>\n"
+        if getattr(signal, "occ_symbol", ""):
+            options_lines += f"📋 <b>OCC Contract:</b> <code>{signal.occ_symbol}</code>\n"
         
         if abs(signal.delta) > 0:
             iv_str = f"{signal.iv*100:.1f}%" if signal.iv > 0 else "N/A"
@@ -82,6 +84,9 @@ def format_telegram_alert(signal: TradeSignal) -> str:
         move_str = f" (+{signal.expected_move_pct:.1f}% Move)" if getattr(signal, "expected_move_pct", 0) > 0 else ""
         tier_line = f"🏷️ <b>Asset Tier:</b> {signal.asset_tier}{move_str}\n"
 
+    ai_thesis_line = f"🤖 <b>DeepSeek Thesis:</b> <i>\"{signal.ai_thesis}\"</i>\n" if getattr(signal, "ai_thesis", "") else ""
+    hist_edge_line = f"📊 <b>Historical Edge:</b> <code>{signal.historical_edge}</code>\n" if getattr(signal, "historical_edge", "") else ""
+
     msg = (
         f"{strategy_header}\n"
         f"Asset: {ticker_code} ({action_label})\n"
@@ -91,7 +96,9 @@ def format_telegram_alert(signal: TradeSignal) -> str:
         f"{earnings_line}"
         f"{options_lines}"
         f"🧠 <b>Confluence:</b> <i>{signal.context_score}</i>\n"
-        f"📊 <b>Conviction:</b> {signal.conviction} (<code>{int(signal.win_probability * 100)}%</code>)\n\n"
+        f"📊 <b>Conviction:</b> {signal.conviction} (<code>{int(signal.win_probability * 100)}%</code>)\n"
+        f"{hist_edge_line}"
+        f"{ai_thesis_line}\n"
         f"📈 <b>Market Context:</b>\n"
         f"• Price: <code>${signal.price:.2f}</code>\n"
         f"• VWAP: <code>{vwap_label}</code>\n"
