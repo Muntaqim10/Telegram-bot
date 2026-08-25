@@ -312,7 +312,7 @@ async def lifespan(app: FastAPI):
     elif os.path.exists("data/ml_training_data_v2.parquet"):
         app.state.engine.xgb_model.train("data/ml_training_data_v2.parquet")
     else:
-        msg = "⚠️ XGBoost Sentinel V2 not loaded — no model file or training data found.\nAll signals will show LOW conviction by default. Run backtester_v2 to generate training data, then retrain before relying on conviction scores."
+        msg = "⚠️ XGBoost Sentinel V2 not loaded — no model file or training data found.\nAll signals will show LOW conviction by default. Run run_pipeline.py to generate training data, then retrain before relying on conviction scores."
         log.warning(msg)
         asyncio.create_task(app.state.engine.alerts.dispatch_informational(msg))
     

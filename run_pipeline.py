@@ -20,18 +20,13 @@ async def run_pipeline():
     await download_main()
     
     # 2. Run Strategy Simulation
-    log.info("Step 2/3: Simulating 4-timeframe strategy across historical bars...")
-    import redis.asyncio as aioredis
-    from src.main import IntradayEngine
-    from src.backtester_v2 import IntradayBacktesterV2
+    log.info("Step 2/3: Simulating 4-timeframe & options pricing strategy across historical bars...")
+    from src.backtest.engine import BacktestEngine
+    from src.data.dynamic_scanner import CANDIDATE_POOL
     
-    redis = await aioredis.from_url("redis://localhost:6379/0", decode_responses=True)
-    engine = IntradayEngine(redis)
-    backtester = IntradayBacktesterV2(engine)
-    
-    data_dir = os.path.abspath("data/intraday/")
-    await backtester.run_simulation(data_dir)
-    await redis.aclose()
+    token = os.getenv("TRADIER_ACCESS_TOKEN")
+    engine = BacktestEngine(token)
+    await engine.run_backtest(CANDIDATE_POOL, max_holding_days=10, lookback_days=365)
     
     # 3. Retrain XGBoost Model
     log.info("Step 3/3: Retraining XGBoost Sentinel ML Model...")
