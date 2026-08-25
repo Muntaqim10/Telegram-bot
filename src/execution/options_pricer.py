@@ -366,6 +366,47 @@ class OptionsPricer:
             else:
                 result["premium_ratio"] = 0.0
                 result["theta_ratio"] = 0.0
+
+            # Secondary Scan: Scan for Optional High-Leverage OTM Runner (~0.35 Delta)
+            otm_contracts = []
+            for contract in valid_contracts:
+                greeks = contract.get("greeks", {}) or {}
+                delta = abs(greeks.get("delta", 0.0) or 0.0)
+                strike = float(contract.get("strike", 0.0))
+                bid = contract.get("bid", 0.0) or 0.0
+                ask = contract.get("ask", 0.0) or 0.0
+                vol = contract.get("volume", 0) or 0
+                oi = contract.get("open_interest", 0) or 0
+                spread = ask - bid
+                mid = (bid + ask) / 2.0
+                spread_ratio = spread / mid if mid > 0 else 1.0
+
+                is_liquid_otm = (oi >= 50 or vol >= 25) and (spread_ratio <= 0.25 or spread <= 0.35)
+                if not is_liquid_otm or ask <= 0.10:
+                    continue
+
+                if 0.20 <= delta <= 0.45:
+                    if option_type.lower() == "call" and (strike + ask) <= take_profit * 1.03:
+                        otm_contracts.append((abs(delta - 0.35), contract))
+                    elif option_type.lower() == "put" and (strike - ask) >= take_profit * 0.97:
+                        otm_contracts.append((abs(delta - 0.35), contract))
+
+            if otm_contracts:
+                otm_contracts.sort(key=lambda x: x[0])
+                best_otm = otm_contracts[0][1]
+                otm_greeks = best_otm.get("greeks", {}) or {}
+                otm_ask = best_otm.get("ask", 0.0) or 0.0
+                result["otm_runner"] = {
+                    "strike": float(best_otm.get("strike", 0.0)),
+                    "occ_symbol": best_otm.get("symbol", ""),
+                    "bid": best_otm.get("bid", 0.0),
+                    "ask": otm_ask,
+                    "delta": otm_greeks.get("delta", 0.0),
+                    "theta": otm_greeks.get("theta", 0.0),
+                    "iv": otm_greeks.get("smv_vol", otm_greeks.get("implied_volatility", 0.0)),
+                    "opt_tp": round(otm_ask * 1.80, 2),
+                    "opt_sl": round(otm_ask * 0.50, 2)
+                }
             
             # Evaluation Logic for contracts that passed the hard gates
             if result["verdict"] == "UNKNOWN": # i.e. it wasn't flagged as UNTRADEABLE AT SIZE

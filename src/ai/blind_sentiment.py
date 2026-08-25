@@ -99,6 +99,7 @@ class BlindSentimentAnalyzer:
             f"• 'catalyst': Concise summary of the fundamental/news catalyst driving the ticker (max 8 words).\n"
             f"• 'ai_thesis': Exactly ONE concise, professional sentence summarizing why the news catalyst, math, and historical backtest edge support (or caution against) this {direction} trade.\n"
             f"• 'whale_detected': boolean (true if SEC filings, major institutional accumulation, or dark pool blocks are reported).\n"
+            f"• 'otm_qualified': boolean (set to true ONLY on rare occasions when massive fundamental news catalyst, expected move >= 15%, and historical backtest edge indicate an explosive breakout capable of reaching OTM strikes).\n"
             f"• 'verdict': 'CONCORDANT' if news agrees with technicals, 'DISCORDANT' if news contradicts trade, or 'NEUTRAL' if no news.\n"
         )
 
@@ -127,14 +128,17 @@ class BlindSentimentAnalyzer:
             catalyst = str(data.get("catalyst", "Technical Momentum"))
             ai_thesis = str(data.get("ai_thesis", "Catalyst and backtest metrics align with setup."))
             is_whale = bool(data.get("whale_detected", False))
+            otm_qualified = bool(data.get("otm_qualified", False))
             verdict = str(data.get("verdict", "CONCORDANT")).upper()
 
             result = {
                 "score": score,
                 "confidence": conf,
+                "conf": conf,
                 "catalyst": catalyst,
                 "ai_thesis": ai_thesis,
                 "is_whale": is_whale,
+                "otm_qualified": otm_qualified,
                 "verdict": verdict
             }
 

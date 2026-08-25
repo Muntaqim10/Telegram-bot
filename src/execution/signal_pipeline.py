@@ -268,7 +268,6 @@ class SignalPipeline:
         ai_thesis = synth_result.get("ai_thesis", "")
         if synth_result.get("is_whale"):
             is_whale = True
-            
         hist_edge_str = ""
         if bt_stats.get("total_trades", 0) > 0:
             hist_edge_str = (
@@ -277,6 +276,15 @@ class SignalPipeline:
             )
         else:
             hist_edge_str = "Initial Live Tracking (Broad Watchlist Dynamic Scan)"
+
+        # Check if setup qualifies for High-Leverage OTM Runner (Rare occasions: DeepSeek + Math + Backtest)
+        raw_otm = pricing_data.get("otm_runner")
+        otm_qualified = False
+        if raw_otm and synth_result.get("otm_qualified", False):
+            min_exp = 8.0 if tier_info.get("tier") == "MEGA-CAP" else 20.0
+            if xgb_result['win_prob'] >= 0.75 and expected_move_pct >= min_exp:
+                otm_qualified = True
+                log.info(f"🚀 [{ticker}] Setup QUALIFIED for RARE High-Leverage OTM Runner (${raw_otm.get('strike')} {opt_type.upper()}).")
 
         # 5. Build TradeSignal Object
         trade_signal = TradeSignal(
@@ -326,7 +334,9 @@ class SignalPipeline:
             pricing_reason=pricing_data.get("reason", ""),
             earnings_risk=earnings_in_window,
             earnings_date=next_earnings,
-            gex_confidence=pricing_data.get("gex_confidence", "STANDARD")
+            gex_confidence=pricing_data.get("gex_confidence", "STANDARD"),
+            otm_runner=raw_otm if otm_qualified else None,
+            otm_qualified=otm_qualified
         )
 
         await self.alerts.dispatch_high_conviction(trade_signal)

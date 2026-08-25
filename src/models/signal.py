@@ -63,3 +63,7 @@ class TradeSignal:
     earnings_risk: bool = False
     earnings_date: Optional[str] = None
     gex_confidence: str = "STANDARD"
+
+    # Optional High-Leverage OTM Runner (DeepSeek + Backtest Concordant)
+    otm_runner: Optional[Dict[str, Any]] = None
+    otm_qualified: bool = False

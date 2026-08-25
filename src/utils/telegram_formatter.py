@@ -43,13 +43,12 @@ def format_telegram_alert(signal: TradeSignal) -> str:
     
     # Options target line (only if we have real data)
     options_lines = ""
-    timeframe = signal.timeframe_target.upper()
     strike_to_use = signal.target_strike or signal.intraday_strike
     expiry_to_use = signal.expiry or signal.intraday_expiry
     opt_type_to_use = signal.option_type or signal.intraday_option_type
 
     if strike_to_use and expiry_to_use:
-        prefix = "🎯 <b>Target (Swing):</b>" if timeframe == "SWING" else "⚡ <b>Target (Weekly):</b>"
+        prefix = "🎯 <b>Primary Target (ITM Intrinsic):</b>"
         option_details = f"{expiry_to_use} ${strike_to_use} {opt_type_to_use}"
         options_lines = f"{prefix} <code>{option_details}</code>\n"
         if getattr(signal, "occ_symbol", ""):
@@ -59,7 +58,7 @@ def format_telegram_alert(signal: TradeSignal) -> str:
             iv_str = f"{signal.iv*100:.1f}%" if signal.iv > 0 else "N/A"
             options_lines += "⚖️ <b>Greeks & Premium:</b>\n"
             options_lines += f"   • Premium: <code>${signal.option_ask:.2f}</code>\n"
-            options_lines += f"   • Delta: <code>{signal.delta:.2f}</code>\n"
+            options_lines += f"   • Delta: <code>{signal.delta:.2f}</code> (Intrinsic Value)\n"
             options_lines += f"   • Theta: <code>{signal.theta:.4f}</code>\n"
             options_lines += f"   • IV: <code>{iv_str}</code>\n"
             
@@ -67,6 +66,23 @@ def format_telegram_alert(signal: TradeSignal) -> str:
             options_lines += f"{verdict_color} <b>Pricing:</b> {signal.pricing_verdict or 'UNKNOWN'} - <i>{signal.pricing_reason}</i>\n"
         else:
             options_lines += "⚠️ <b>Warning:</b> Short-term weekly option. Exit if target not hit within 60 mins.\n"
+
+    # Optional Rare High-Leverage OTM Runner
+    otm_lines = ""
+    otm_runner = getattr(signal, "otm_runner", None)
+    if otm_runner and getattr(signal, "otm_qualified", False):
+        otm_strike = otm_runner.get("strike", 0.0)
+        otm_occ = otm_runner.get("occ_symbol", "")
+        otm_ask = otm_runner.get("ask", 0.0)
+        otm_delta = otm_runner.get("delta", 0.0)
+        otm_tp = otm_runner.get("opt_tp", otm_ask * 1.8)
+        otm_sl = otm_runner.get("opt_sl", otm_ask * 0.5)
+        otm_lines = (
+            f"🔥 <b>RARE HIGH-LEVERAGE OTM RUNNER (DeepSeek & Backtest Qualified):</b>\n"
+            f"  • Contract: <code>${otm_strike} {opt_type_to_use}</code> @ <code>${otm_ask:.2f}</code> (Delta: <code>{otm_delta:.2f}</code>)\n"
+            f"  • OCC: <code>{otm_occ}</code> | Est. Cost: <code>${otm_ask*100:,.0f}/contract</code>\n"
+            f"  • Target TP: <code>${otm_tp:.2f} (+80%)</code> | SL: <code>${otm_sl:.2f} (-50%)</code>\n\n"
+        )
     
     whale_line = "🐳 <b>Whale Flow:</b> <code>$100k+ Detected</code>\n" if signal.is_whale else ""
     
@@ -111,6 +127,7 @@ def format_telegram_alert(signal: TradeSignal) -> str:
         f"{warning_line}\n"
         f"{earnings_line}"
         f"{options_lines}"
+        f"{otm_lines}"
         f"{tf_lines}"
         f"🧠 <b>Confluence:</b> <i>{signal.context_score}</i>\n"
         f"📊 <b>Conviction:</b> {signal.conviction} (<code>{int(signal.win_probability * 100)}%</code>)\n"
