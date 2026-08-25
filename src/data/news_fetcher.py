@@ -33,17 +33,29 @@ class NewsFetcher:
                 return cached["headlines"][:max_count]
 
         headlines = []
+        seen = set()
+        
+        # 1. Primary: Finnhub Real-time News
         if self.finnhub_token:
-            headlines = await self._fetch_finnhub(ticker, max_count, session)
+            finnhub_news = await self._fetch_finnhub(ticker, max_count, session)
+            for h in finnhub_news:
+                if h.lower() not in seen:
+                    headlines.append(h)
+                    seen.add(h.lower())
             
-        if not headlines and self.tiingo_token:
-            headlines = await self._fetch_tiingo(ticker, max_count, session)
+        # 2. Multi-Source Boost: Tiingo Financial News
+        if self.tiingo_token and len(headlines) < max_count:
+            tiingo_news = await self._fetch_tiingo(ticker, max_count - len(headlines), session)
+            for h in tiingo_news:
+                if h.lower() not in seen:
+                    headlines.append(h)
+                    seen.add(h.lower())
 
         # Update cache
         if headlines:
             self._cache[cache_key] = {"headlines": headlines, "fetched_at": now}
 
-        return headlines
+        return headlines[:max_count]
 
     async def _fetch_finnhub(self, ticker: str, max_count: int, session=None) -> List[str]:
         today_str = date.today().strftime("%Y-%m-%d")
