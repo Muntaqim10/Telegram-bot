@@ -26,7 +26,7 @@ class FlashAlphaClient:
         """
         if not self.api_key:
             log.warning("FlashAlpha API key not found. Skipping GEX lookup.")
-            return {}
+            return {"status": "unavailable"}
 
         url = f"{self.base_url}/exposure/gex/{ticker.upper()}?expiration={expiration}"
         
@@ -37,20 +37,28 @@ class FlashAlphaClient:
                         data = await resp.json()
                         if "error" in data:
                             log.warning(f"FlashAlpha returned error for {ticker}: {data.get('message')}")
-                            return {}
+                            # Check if the body indicates a rate limit/quota error despite 200 OK
+                            msg = data.get("message", "").lower()
+                            if "quota" in msg or "rate" in msg:
+                                return {"status": "rate_limited"}
+                            return {"status": "unavailable"}
                         return {
+                            "status": "ok",
                             "net_gex": data.get("net_gex", 0.0),
                             "call_wall": data.get("call_wall", 0.0),
                             "put_wall": data.get("put_wall", 0.0),
                             "gamma_flip": data.get("gamma_flip_point", 0.0),
                             "spot_price": data.get("spot_price", 0.0)
                         }
+                    elif resp.status == 429:
+                        log.warning(f"FlashAlpha API rate limit hit for {ticker}")
+                        return {"status": "rate_limited"}
                     else:
                         log.warning(f"FlashAlpha API returned status {resp.status} for {ticker}")
-                        return {}
+                        return {"status": "unavailable"}
         except asyncio.TimeoutError:
             log.warning(f"FlashAlpha API timed out for {ticker}")
-            return {}
+            return {"status": "unavailable"}
         except Exception as e:
             log.error(f"FlashAlpha API error for {ticker}: {e}")
-            return {}
+            return {"status": "unavailable"}

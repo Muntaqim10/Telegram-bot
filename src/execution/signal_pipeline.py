@@ -158,7 +158,7 @@ class SignalPipeline:
 
         # 4.5 FlashAlpha Institutional GEX Filter
         fa_data = await self.flashalpha.get_gex_profile(ticker, expiration)
-        if fa_data:
+        if fa_data.get("status") == "ok":
             call_wall = fa_data.get("call_wall", 0.0)
             put_wall = fa_data.get("put_wall", 0.0)
             
@@ -174,6 +174,8 @@ class SignalPipeline:
             if call_wall > 0 and put_wall > 0:
                 wall_text = f"🛡️ MM Walls: Call ${call_wall} | Put ${put_wall}"
                 final_warning_tag = f"{final_warning_tag} | {wall_text}" if final_warning_tag else wall_text
+        elif fa_data.get("status") == "rate_limited":
+            final_warning_tag = f"{final_warning_tag} | ⚠️ GEX check skipped (rate limit)" if final_warning_tag else "⚠️ GEX check skipped (rate limit)"
                 
         # Verdict handling
         strategy_suggestion = None
