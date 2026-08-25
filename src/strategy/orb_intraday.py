@@ -5,6 +5,8 @@ from typing import Dict, Optional
 
 log = logging.getLogger(__name__)
 
+CONFIRMATION_BARS = int(os.getenv("BREAKOUT_CONFIRMATION_BARS", "2"))
+
 class ORBStrategy:
     """
     Advanced Intraday Strategy tracking ORBs, VWAP, and EMAs.
@@ -20,6 +22,40 @@ class ORBStrategy:
         self.active_signals = {}
         self.intraday_state = {} # Dict[ticker, dict]
         self.vol_surge_multiplier = float(os.getenv("ORB_VOL_SURGE_MULTIPLIER", "1.5"))
+
+    def _trigger_or_queue_breakout(
+        self,
+        ticker: str,
+        state: dict,
+        level: float,
+        direction: str,
+        catalyst_type: str,
+        tf_confluence: str,
+        signal_data: dict,
+        price: float,
+        timestamp: pd.Timestamp,
+        desc: str
+    ) -> Optional[Dict]:
+        """
+        Immediately fires breakout signal if CONFIRMATION_BARS <= 0,
+        otherwise records a pending breakout to ensure price holds beyond level.
+        """
+        if CONFIRMATION_BARS <= 0:
+            self.active_signals[ticker] = {"direction": direction, "time": timestamp}
+            signal_data.update({"direction": direction, "catalyst_type": catalyst_type, "tf_confluence": tf_confluence})
+            return signal_data
+
+        state["pending_breakout"] = {
+            "level": level,
+            "direction": direction,
+            "catalyst_type": catalyst_type,
+            "tf_confluence": tf_confluence,
+            "initial_price": price,
+            "signal_data": dict(signal_data),
+            "bars_confirmed": 0,
+            "desc": desc
+        }
+        return None
         
     def _get_market_session(self, timestamp: pd.Timestamp) -> str:
         """Determines market session: PREMARKET, RTH (Regular Trading Hours), or POSTMARKET."""
@@ -147,6 +183,64 @@ class ORBStrategy:
                 orb["orb_established"] = True
                 
             # =======================
+            # 0. PENDING BREAKOUT CONFIRMATION EVALUATION
+            # =======================
+            pb = state.get("pending_breakout")
+            if pb is not None:
+                direction = pb["direction"]
+                level = pb["level"]
+                catalyst_type = pb["catalyst_type"]
+                desc = pb.get("desc", catalyst_type)
+                
+                if direction == "Long":
+                    if price >= level:
+                        pb["bars_confirmed"] += 1
+                        if pb["bars_confirmed"] >= CONFIRMATION_BARS:
+                            sig = pb["signal_data"]
+                            sig.update({
+                                "direction": "Long",
+                                "catalyst_type": catalyst_type,
+                                "tf_confluence": pb.get("tf_confluence", "1m+5m+ORB+Daily"),
+                                "entry_price": pb["initial_price"],
+                                "timestamp": timestamp
+                            })
+                            self.active_signals[ticker] = {"direction": "Long", "time": timestamp}
+                            state["pending_breakout"] = None
+                            log.info(f"[{ticker}] {catalyst_type} CONFIRMED after {pb['bars_confirmed']} confirmation bars (Entry: ${pb['initial_price']:.2f}).")
+                            return sig
+                        # Still waiting for remaining confirmation bars
+                        return None
+                    else:
+                        # Fakeout rejected!
+                        held = pb["bars_confirmed"]
+                        log.info(f"[{ticker}] Breakout {desc} rejected: reversed after {held}/{CONFIRMATION_BARS} confirmation bars.")
+                        state["pending_breakout"] = None
+
+                elif direction == "Short":
+                    if price <= level:
+                        pb["bars_confirmed"] += 1
+                        if pb["bars_confirmed"] >= CONFIRMATION_BARS:
+                            sig = pb["signal_data"]
+                            sig.update({
+                                "direction": "Short",
+                                "catalyst_type": catalyst_type,
+                                "tf_confluence": pb.get("tf_confluence", "1m+5m+ORB+Daily"),
+                                "entry_price": pb["initial_price"],
+                                "timestamp": timestamp
+                            })
+                            self.active_signals[ticker] = {"direction": "Short", "time": timestamp}
+                            state["pending_breakout"] = None
+                            log.info(f"[{ticker}] {catalyst_type} CONFIRMED after {pb['bars_confirmed']} confirmation bars (Entry: ${pb['initial_price']:.2f}).")
+                            return sig
+                        # Still waiting for remaining confirmation bars
+                        return None
+                    else:
+                        # Fakeout rejected!
+                        held = pb["bars_confirmed"]
+                        log.info(f"[{ticker}] Breakdown {desc} rejected: reversed after {held}/{CONFIRMATION_BARS} confirmation bars.")
+                        state["pending_breakout"] = None
+
+            # =======================
             # CLOSING RANGE & INTRADAY BREAKOUT EVALUATION (CRB)
             # =======================
             last_sig_info = self.active_signals.get(ticker)
@@ -189,9 +283,11 @@ class ORBStrategy:
             if not is_overextended_upside and has_volume_surge:
                 # Highest Conviction: Dual ORB + CRB Breakout (Price > ORB High AND Price > CRB High)
                 if price > orb["high"] and price >= state.get("crb_high", price) and price >= state["vwap"] and ema_trend_5m_bullish == 1:
-                    self.active_signals[ticker] = {"direction": "Long", "time": timestamp}
-                    signal_data.update({"direction": "Long", "catalyst_type": "🔥 DUAL ORB+CRB CALL BREAKOUT", "tf_confluence": "1m+5m+ORB+CRB+Daily"})
-                    return signal_data
+                    level = max(orb["high"], state.get("crb_high", price))
+                    return self._trigger_or_queue_breakout(
+                        ticker, state, level, "Long", "🔥 DUAL ORB+CRB CALL BREAKOUT", 
+                        "1m+5m+ORB+CRB+Daily", signal_data, price, timestamp, f"above Dual ORB+CRB high (${level:.2f})"
+                    )
 
                 # Reversal Entry: Failed Breakdown Reclaim (Price was below ORB Low, now reclaims VWAP & 5m 9-EMA)
                 if price <= orb["low"] * 1.005 and price >= state["vwap"] and ema_trend_5m_bullish == 1 and ema_trend_1m_bullish == 1:
@@ -200,14 +296,17 @@ class ORBStrategy:
                     return signal_data
 
                 if price > orb["high"] and price >= state["vwap"] and ema_trend_5m_bullish == 1:
-                    self.active_signals[ticker] = {"direction": "Long", "time": timestamp}
-                    signal_data.update({"direction": "Long", "catalyst_type": "Opening Range Call Breakout (ORB)"})
-                    return signal_data
+                    return self._trigger_or_queue_breakout(
+                        ticker, state, orb["high"], "Long", "Opening Range Call Breakout (ORB)",
+                        "1m+5m+ORB+Daily", signal_data, price, timestamp, f"above ORB high (${orb['high']:.2f})"
+                    )
 
                 if price >= state.get("crb_high", price) and price >= state["vwap"] and ema_trend_5m_bullish == 1:
-                    self.active_signals[ticker] = {"direction": "Long", "time": timestamp}
-                    signal_data.update({"direction": "Long", "catalyst_type": "Closing Range Call Breakout (CRB)"})
-                    return signal_data
+                    crb_h = state.get("crb_high", price)
+                    return self._trigger_or_queue_breakout(
+                        ticker, state, crb_h, "Long", "Closing Range Call Breakout (CRB)",
+                        "1m+5m+CRB+Daily", signal_data, price, timestamp, f"above CRB high (${crb_h:.2f})"
+                    )
 
                 if vwap_ratio >= 1.002 and ema9_ratio >= 1.001 and ema_trend_1m_bullish == 1 and ema_trend_5m_bullish == 1:
                     self.active_signals[ticker] = {"direction": "Long", "time": timestamp}
@@ -218,9 +317,11 @@ class ORBStrategy:
             if not is_overextended_downside and has_volume_surge:
                 # Highest Conviction: Dual ORB + CRB Breakdown (Price < ORB Low AND Price < CRB Low)
                 if price < orb["low"] and price <= state.get("crb_low", price) and price <= state["vwap"] and ema_trend_5m_bullish == 0:
-                    self.active_signals[ticker] = {"direction": "Short", "time": timestamp}
-                    signal_data.update({"direction": "Short", "catalyst_type": "🔥 DUAL ORB+CRB PUT BREAKDOWN", "tf_confluence": "1m+5m+ORB+CRB+Daily"})
-                    return signal_data
+                    level = min(orb["low"], state.get("crb_low", price))
+                    return self._trigger_or_queue_breakout(
+                        ticker, state, level, "Short", "🔥 DUAL ORB+CRB PUT BREAKDOWN",
+                        "1m+5m+ORB+CRB+Daily", signal_data, price, timestamp, f"below Dual ORB+CRB low (${level:.2f})"
+                    )
 
                 # Reversal Entry: Failed Breakout Reversal (Price pushed above ORB High, lost VWAP & 5m 9-EMA)
                 if price >= orb["high"] * 0.995 and price <= state["vwap"] and ema_trend_5m_bullish == 0 and ema_trend_1m_bullish == 0:
@@ -229,14 +330,17 @@ class ORBStrategy:
                     return signal_data
 
                 if price < orb["low"] and price <= state["vwap"] and ema_trend_5m_bullish == 0:
-                    self.active_signals[ticker] = {"direction": "Short", "time": timestamp}
-                    signal_data.update({"direction": "Short", "catalyst_type": "Opening Range Put Breakdown (ORB)"})
-                    return signal_data
+                    return self._trigger_or_queue_breakout(
+                        ticker, state, orb["low"], "Short", "Opening Range Put Breakdown (ORB)",
+                        "1m+5m+ORB+Daily", signal_data, price, timestamp, f"below ORB low (${orb['low']:.2f})"
+                    )
 
                 if price <= state.get("crb_low", price) and price <= state["vwap"] and ema_trend_5m_bullish == 0:
-                    self.active_signals[ticker] = {"direction": "Short", "time": timestamp}
-                    signal_data.update({"direction": "Short", "catalyst_type": "Closing Range Put Breakdown (CRB)"})
-                    return signal_data
+                    crb_l = state.get("crb_low", price)
+                    return self._trigger_or_queue_breakout(
+                        ticker, state, crb_l, "Short", "Closing Range Put Breakdown (CRB)",
+                        "1m+5m+CRB+Daily", signal_data, price, timestamp, f"below CRB low (${crb_l:.2f})"
+                    )
 
                 if vwap_ratio <= 0.998 and ema9_ratio <= 0.999 and ema_trend_1m_bullish == 0 and ema_trend_5m_bullish == 0:
                     self.active_signals[ticker] = {"direction": "Short", "time": timestamp}
