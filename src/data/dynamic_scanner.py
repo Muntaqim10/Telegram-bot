@@ -8,23 +8,35 @@ log = logging.getLogger(__name__)
 # Broad pool of dynamic candidates optimized for HIGH OPTIONS LEVERAGE (High Beta, High IV, Massive Gamma potential)
 CANDIDATE_POOL = [
     # Core Indexes & Mag 7
-    "SPY", "QQQ", "IWM", "GLD", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
-    # High-Beta Semiconductors & Hardware
-    "AMD", "AVGO", "SMCI", "ARM", "MU", "LRCX", "AMAT", "DELL", "ALAB", "INTC", "TXN",
-    # Crypto Proxies & Ultra-High Beta
-    "COIN", "MSTR", "MARA", "RIOT", "HOOD", "CVNA", "UPST", "AFRM", "SOUN",
-    # High-Movement Software/Cloud/Cyber
-    "PLTR", "CRWD", "PANW", "SNOW", "DDOG", "NET", "ZS", "ADBE", "INTU", "NOW",
-    # High-Volatility Consumer/Retail/Tech
-    "NFLX", "SHOP", "SQ", "ROKU", "UBER", "ABNB", "DASH", "DKNG", "CELH", "U", "RDDT",
-    # Biotech/Pharma Runners
-    "MRNA", "VRTX", "REGN", "LLY", "ISRG",
-    # Meme & Retail Favorites
-    "GME", "AMC", "DJT", "RIVN"
+    "SPY", "QQQ", "IWM", "DIA", "GLD", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
+    # High-Beta Semiconductors & AI Hardware
+    "AMD", "AVGO", "TSM", "QCOM", "MRVL", "ASML", "SMCI", "ARM", "MU", "LRCX", "AMAT", "DELL", "ALAB", "INTC", "TXN",
+    # Nuclear Energy & AI Power Infrastructure
+    "CEG", "VST", "CCJ", "SMR", "OKLO", "FSLR", "ENPH",
+    # Defense, Aerospace & Space Tech
+    "LMT", "RTX", "NOC", "BA", "RKLB", "ASTS", "ACHR", "JOBY",
+    # Quantum & Next-Gen Computing
+    "IONQ", "RGTI", "QBTS",
+    # Crypto Proxies & High-Beta Fintech
+    "COIN", "MSTR", "MARA", "RIOT", "CLSK", "WULF", "CIFR", "HOOD", "CVNA", "UPST", "AFRM", "SOFI", "SOUN", "APP", "PYPL",
+    # Cloud, Cybersecurity & Enterprise SaaS
+    "PLTR", "CRWD", "PANW", "SNOW", "DDOG", "NET", "ZS", "ADBE", "INTU", "NOW", "FTNT", "MDB", "TEAM", "PATH",
+    # High-Growth Platforms, Consumer, Retail & Media
+    "NFLX", "DIS", "SHOP", "SQ", "ROKU", "UBER", "ABNB", "DASH", "DKNG", "CELH", "U", "RDDT", "CAVA", "HIMS", "TEM", "LULU", "NKE", "COST", "WMT", "TGT",
+    # Biotech & Healthcare Movers
+    "MRNA", "VRTX", "REGN", "LLY", "ISRG", "NVO", "BIIB", "GILD", "UNH", "JNJ",
+    # Financials & Industrial Leaders
+    "JPM", "GS", "MS", "V", "MA", "CAT", "GE",
+    # China Tech & Global Movers
+    "BABA", "PDD", "BIDU",
+    # Meme & Momentum Breakout Favorites
+    "GME", "AMC", "DJT", "RIVN", "LCID"
 ]
 
 MEGA_CAP_TICKERS = {
-    "SPY", "QQQ", "IWM", "GLD", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AVGO", "AMD", "NFLX"
+    "SPY", "QQQ", "IWM", "DIA", "GLD", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", 
+    "TSLA", "AVGO", "AMD", "NFLX", "TSM", "ASML", "LLY", "NVO", "LMT", "QCOM", "NOW", "ADBE",
+    "COST", "WMT", "JPM", "GS", "V", "MA", "UNH", "CAT", "GE", "DIS", "BA"
 }
 
 def get_asset_tier_info(ticker: str) -> dict:

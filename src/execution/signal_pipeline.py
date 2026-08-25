@@ -21,6 +21,8 @@ class SignalPipeline:
         
         from src.data.flashalpha_client import FlashAlphaClient
         self.flashalpha = FlashAlphaClient()
+        from src.strategy.timeframe_confluence import TimeframeConfluenceEngine
+        self.tf_engine = TimeframeConfluenceEngine()
 
     async def process_signal(self, signal: Dict[str, Any], spy_vwap_ratio: float = 1.0, session=None):
         """Passes the raw signal through AI filters before alerting."""
@@ -136,6 +138,36 @@ class SignalPipeline:
         # 4. Options Pricing Check (Dynamic Expirations: 1-30 DTE handling 3-day / short-cycle expirations on NVDA/SPY/QQQ & weeklies)
         expiration = await self.options_pricer.get_target_expiration(ticker, min_dte=1, max_dte=30, session=session)
         target_strike = float(round(signal["entry_price"])) # Spot reference (OptionsPricer optimizes to ~0.75 Delta ITM)
+
+        # 4.1 Evaluate Multi-Timeframe Triad Confluence (Weekly/Daily/4H for Weeklies vs Daily/4H/1H for 3-Day)
+        try:
+            exp_dt = datetime.strptime(expiration, "%Y-%m-%d").date()
+            target_dte = (exp_dt - datetime.now().date()).days
+        except Exception:
+            target_dte = 7
+
+        intraday_ctx = {
+            "vwap": signal.get("vwap", entry_p),
+            "ema9": signal.get("ema9", entry_p),
+            "hod": signal.get("hod", entry_p * 1.02),
+            "lod": signal.get("lod", entry_p * 0.98),
+        }
+
+        tf_matrix = await self.tf_engine.evaluate_confluence(
+            ticker=ticker,
+            spot_price=entry_p,
+            direction=direction,
+            dte=target_dte,
+            intraday_state=intraday_ctx,
+            session=session
+        )
+
+        if not tf_matrix.get("concordant", True):
+            log.warning(
+                f"[{ticker}] Alert suppressed by Timeframe Confluence ({tf_matrix['cycle_name']}): "
+                f"Triad discordance across {tf_matrix['confluence_summary']}."
+            )
+            return
 
         opt_type = "put" if direction == "Short" else "call"
 
@@ -258,7 +290,9 @@ class SignalPipeline:
             xgb_win_prob=xgb_result['win_prob'],
             sentinel_verdict=verdict,
             conviction=conviction,
-            context_score=signal.get("tf_confluence", "Intraday ORB"),
+            context_score=tf_matrix.get("confluence_summary", signal.get("tf_confluence", "Intraday ORB")),
+            cycle_type=tf_matrix.get("cycle_name", "WEEKLY SWING CYCLE"),
+            timeframe_matrix=tf_matrix,
             catalyst=catalyst,
             ai_thesis=ai_thesis,
             historical_edge=hist_edge_str,

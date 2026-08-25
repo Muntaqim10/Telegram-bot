@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Dict, Any
 
 @dataclass
 class TradeSignal:
@@ -54,6 +54,8 @@ class TradeSignal:
     intraday_strike: Optional[float] = None
     intraday_option_type: Optional[str] = None
     timeframe_target: str = "Intraday"
+    cycle_type: str = "WEEKLY SWING CYCLE"
+    timeframe_matrix: Optional[Dict[str, Any]] = None
     pricing_verdict: str = ""
     pricing_reason: str = ""
     

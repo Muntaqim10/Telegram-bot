@@ -87,6 +87,22 @@ def format_telegram_alert(signal: TradeSignal) -> str:
     ai_thesis_line = f"🤖 <b>DeepSeek Thesis:</b> <i>\"{signal.ai_thesis}\"</i>\n" if getattr(signal, "ai_thesis", "") else ""
     hist_edge_line = f"📊 <b>Historical Edge:</b> <code>{signal.historical_edge}</code>\n" if getattr(signal, "historical_edge", "") else ""
 
+    tf_matrix = getattr(signal, "timeframe_matrix", None)
+    tf_lines = ""
+    if tf_matrix:
+        tf1 = tf_matrix.get("tf_1", {})
+        tf2 = tf_matrix.get("tf_2", {})
+        tf3 = tf_matrix.get("tf_3", {})
+        e1 = "🟢" if tf1.get("status") else "⚪"
+        e2 = "🟢" if tf2.get("status") else "⚪"
+        e3 = "🟢" if tf3.get("status") else "⚪"
+        tf_lines = (
+            f"⏳ <b>Timeframe Triad ({tf_matrix.get('cycle_name', 'SWING')}):</b>\n"
+            f"  • {e1} <b>{tf1.get('name')}:</b> <i>{tf1.get('desc')}</i>\n"
+            f"  • {e2} <b>{tf2.get('name')}:</b> <i>{tf2.get('desc')}</i>\n"
+            f"  • {e3} <b>{tf3.get('name')}:</b> <i>{tf3.get('desc')}</i>\n"
+        )
+
     msg = (
         f"{strategy_header}\n"
         f"Asset: {ticker_code} ({action_label})\n"
@@ -95,6 +111,7 @@ def format_telegram_alert(signal: TradeSignal) -> str:
         f"{warning_line}\n"
         f"{earnings_line}"
         f"{options_lines}"
+        f"{tf_lines}"
         f"🧠 <b>Confluence:</b> <i>{signal.context_score}</i>\n"
         f"📊 <b>Conviction:</b> {signal.conviction} (<code>{int(signal.win_probability * 100)}%</code>)\n"
         f"{hist_edge_line}"
