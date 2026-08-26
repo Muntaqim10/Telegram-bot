@@ -60,8 +60,12 @@ class SignalPipeline:
         final_warning_tag = "⚠️ " + " | ".join(warnings) if warnings else None
 
         # 3. XGBoost Sentinel Check → Conviction Tier (never a silent kill)
+        sig_ts = signal.get("timestamp")
+        if sig_ts is None or not hasattr(sig_ts, "hour"):
+            sig_ts = datetime.now()
+
         features = {
-            "entry_time_minute": signal["timestamp"].hour * 60 + signal["timestamp"].minute,
+            "entry_time_minute": sig_ts.hour * 60 + sig_ts.minute,
             "relative_volume": signal.get("relative_volume", 1.0),
             "vwap_ratio": signal.get("vwap_ratio", 1.0),
             "ema9_ratio": signal.get("ema9_ratio", 1.0),
@@ -92,8 +96,8 @@ class SignalPipeline:
             
         log.info(f"✅ {ticker} {direction} Conviction: {conviction}. Dispatching Alert.")
 
-        # Extract breakout level for fast thesis invalidation (ORB high/low, Donchian high/low, CRB)
-        invalidation_level = signal.get("breakout_level")
+        # Extract breakout level for fast thesis invalidation (Momentum Movers, ORB, Donchian, CRB)
+        invalidation_level = signal.get("invalidation_level") or signal.get("breakout_level")
         if invalidation_level is None:
             if direction == "Long":
                 invalidation_level = signal.get("orb_high") or signal.get("donchian_high") or signal.get("crb_high")

@@ -12,6 +12,7 @@ root_env = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.env"))
 config_env = os.path.abspath(os.path.join(os.path.dirname(__file__), "../config/.env"))
 load_dotenv(dotenv_path=root_env)
 load_dotenv(dotenv_path=config_env)
+import random
 import pandas as pd
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -33,12 +34,14 @@ from src.data.stream_market import TradierMarketStream
 from src.strategy.orb_intraday import ORBStrategy
 from src.strategy.donchian_daily import DonchianSwingStrategy
 from src.strategy.extended_hours_scanner import ExtendedHoursScanner
+from src.strategy.momentum_movers import MomentumMoversStrategy
 from src.ai.blind_sentiment import BlindSentimentAnalyzer
 from src.ai.xgb_micro_v2 import XGBMicroSentinelV2
 from src.execution.risk_manager import RiskManager
 from src.alerts import AlertGateway
 
 from src.data.dynamic_scanner import DynamicTickerScanner, CANDIDATE_POOL
+from src.data.market_gainer_discovery import MarketGainerDiscovery, EXPANDED_UNIVERSE
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 TRADIER_TOKEN = os.getenv("TRADIER_ACCESS_TOKEN")
@@ -66,8 +69,12 @@ class IntradayEngine:
         self.redis = redis_client
         self.event_queue = asyncio.Queue()
         self.dynamic_scanner = DynamicTickerScanner(TRADIER_TOKEN)
-        # Initialize market stream with dynamic candidate pool
-        initial_symbols = CANDIDATE_POOL[:40]
+        self.gainer_discovery = MarketGainerDiscovery(TRADIER_TOKEN)
+        self.momentum_movers = MomentumMoversStrategy()
+        self._bar_aggregators = {}
+        
+        # Initialize market stream with expanded liquid universe
+        initial_symbols = EXPANDED_UNIVERSE[:120]
         self.market_stream = TradierMarketStream(TRADIER_TOKEN, initial_symbols, self.event_queue)
         self.orb_strategy = ORBStrategy(orb_minutes=15)
         self.donchian_strategy = DonchianSwingStrategy(TRADIER_TOKEN)
@@ -110,16 +117,17 @@ class IntradayEngine:
         await self.alerts.close()
 
     async def run_dynamic_scanner_loop(self):
-        """Periodically scans the broad market for high-volume surge & momentum leaders."""
-        log.info("⚡ [DYNAMIC SCANNER] Starting automated broad market discovery loop...")
+        """Periodically polls Yahoo Finance + Tradier to discover market-wide top gainers & volume runners."""
+        log.info("🚀 [MULTI-API DISCOVERY] Starting automated market-wide surge discovery loop...")
         while True:
             try:
-                active_symbols = await self.dynamic_scanner.get_active_market_movers(max_symbols=50)
+                # Concurrent discovery across Yahoo Finance screeners & Tradier bulk quotes
+                active_symbols = await self.gainer_discovery.discover_market_movers(max_symbols=150)
                 if active_symbols:
                     await self.market_stream.update_symbols(active_symbols)
             except Exception as e:
-                log.error(f"Dynamic scanner loop error: {e}")
-            await asyncio.sleep(900) # Scan every 15 minutes
+                log.error(f"Multi-API discovery loop error: {e}")
+            await asyncio.sleep(300) # Re-scan every 5 minutes
             
     async def run_donchian_scanner_loop(self):
         """Periodically scans for daily Donchian swing setups (runs hourly)."""
@@ -159,6 +167,8 @@ class IntradayEngine:
                 # Reset once per day, at or after 9:29 AM, before the ORB window opens
                 if now.hour == 9 and now.minute >= 29 and self._last_reset_date != today:
                     self.orb_strategy.reset_daily()
+                    self.momentum_movers.reset_daily_state()
+                    self._bar_aggregators.clear()
                     self.extended_scanner.reset_daily()
                     self.risk_manager.reset_daily()
                     self._last_reset_date = today
@@ -267,6 +277,31 @@ class IntradayEngine:
                     
                     # 1.5 Process for extended hours movers
                     self.extended_scanner.process_event(event, now)
+
+                    # 1.6 Aggregate into 1-minute bars for Momentum Movers Strategy
+                    if event.get("type") == "trade" and actual_volume > 0:
+                        cur_min = now.minute
+                        agg = self._bar_aggregators.get(ticker)
+                        if agg is None or agg["minute"] != cur_min:
+                            if agg is not None:
+                                mover_signal = self.momentum_movers.on_bar(agg)
+                                if mover_signal and not signal:
+                                    signal = mover_signal
+                            self._bar_aggregators[ticker] = {
+                                "ticker": ticker,
+                                "open": price,
+                                "high": price,
+                                "low": price,
+                                "close": price,
+                                "volume": actual_volume,
+                                "minute": cur_min,
+                                "timestamp": now
+                            }
+                        else:
+                            agg["high"] = max(agg["high"], price)
+                            agg["low"] = min(agg["low"], price)
+                            agg["close"] = price
+                            agg["volume"] += actual_volume
                     
                     # 2. Priority check for gap movers on open
                     if not signal:
