@@ -191,6 +191,14 @@ class RiskManager:
         except Exception as e:
             log.warning(f"Failed to schedule database archive for {ticker}: {e}")
 
+    def remove_position(self, ticker: str) -> None:
+        """Removes a position WITHOUT logging an outcome -- used to roll 
+        back a position that was speculatively added but never actually 
+        alerted (e.g. suppressed by a downstream gate before the alert 
+        was sent). This is distinct from close_trade(), which logs a 
+        real outcome for a position that was genuinely tracked."""
+        self.active_positions.pop(ticker, None)
+
     def add_position(
         self, 
         ticker: str, 

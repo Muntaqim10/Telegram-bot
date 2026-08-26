@@ -156,6 +156,7 @@ class SignalPipeline:
                 f"[{ticker}] Alert suppressed by Velocity Gate: {tier_info['tier']} expected move ({expected_move_pct:.1f}%) "
                 f"is below the minimum required threshold ({min_required_move}%)."
             )
+            self.risk_manager.remove_position(ticker)
             return
 
         # 4. Options Pricing Check (Dynamic Expirations: 1-30 DTE handling 3-day / short-cycle expirations on NVDA/SPY/QQQ & weeklies)
@@ -190,6 +191,7 @@ class SignalPipeline:
                 f"[{ticker}] Alert suppressed by Timeframe Confluence ({tf_matrix['cycle_name']}): "
                 f"Triad discordance across {tf_matrix['confluence_summary']}."
             )
+            self.risk_manager.remove_position(ticker)
             return
 
         opt_type = "put" if direction == "Short" else "call"
@@ -231,9 +233,11 @@ class SignalPipeline:
 
         if direction == "Long" and pricing_data.get("flow_bias") == "BEARISH PUT FLOW" and pricing_data.get("put_dollar_flow", 0) > pricing_data.get("call_dollar_flow", 0) * 2.5:
             log.warning(f"[{ticker}] Long alert suppressed: Heavy Bearish Put Flow.")
+            self.risk_manager.remove_position(ticker)
             return
         elif direction == "Short" and pricing_data.get("flow_bias") == "BULLISH CALL FLOW" and pricing_data.get("call_dollar_flow", 0) > pricing_data.get("put_dollar_flow", 0) * 2.5:
             log.warning(f"[{ticker}] Short alert suppressed: Heavy Bullish Call Flow.")
+            self.risk_manager.remove_position(ticker)
             return
 
         # 4.5 FlashAlpha Institutional GEX Filter
@@ -245,9 +249,11 @@ class SignalPipeline:
             # Smart Money Filter Rules
             if direction == "Long" and call_wall > 0 and signal["entry_price"] >= call_wall * 0.99 and signal["entry_price"] <= call_wall * 1.01:
                 log.warning(f"[{ticker}] Long alert suppressed by FlashAlpha: Price ({signal['entry_price']}) is hitting the Market Maker Call Wall ({call_wall}).")
+                self.risk_manager.remove_position(ticker)
                 return
             elif direction == "Short" and put_wall > 0 and signal["entry_price"] <= put_wall * 1.01 and signal["entry_price"] >= put_wall * 0.99:
                 log.warning(f"[{ticker}] Short alert suppressed by FlashAlpha: Price ({signal['entry_price']}) is bouncing off the Market Maker Put Wall ({put_wall}).")
+                self.risk_manager.remove_position(ticker)
                 return
                 
             # Embed wall context into the alert
@@ -264,6 +270,7 @@ class SignalPipeline:
         
         if pricing_verdict_str == "POOR VALUE":
             log.warning(f"[{ticker}] Alert suppressed: {pricing_data['reason']}")
+            self.risk_manager.remove_position(ticker)
             return
         elif pricing_verdict_str == "UNTRADEABLE AT SIZE":
             strategy_suggestion = f"⚠️ Setup valid, not tradeable at your size. {pricing_data['reason']}"
