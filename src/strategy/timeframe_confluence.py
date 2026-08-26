@@ -13,14 +13,14 @@ class TimeframeConfluenceEngine:
     Evaluates multi-timeframe confluence specifically aligned to the option expiration cycle:
     
     1. WEEKLY TRADING CYCLE (5-14 DTE):
-       - Macro Trend (Weekly Chart): Multi-week support/resistance & 20 EMA regime
-       - Confirmation (Daily Chart): Daily Donchian momentum & trend alignment
-       - Execution (4-Hour Chart): Precise 4-hour trigger entry & ATR risk levels
+       - Macro Trend (Weekly Chart): Multi-week support/resistance & 10-week EMA regime
+       - Confirmation (Daily Chart): Daily 20 EMA & Donchian momentum alignment
+       - Intraday Trend (VWAP): Institutional VWAP hold
        
     2. 3-DAY SHORT CYCLE (1-3 DTE):
        - Primary Trend (Daily Chart): Multi-session trend & 20 EMA structure
-       - Primary Execution (4-Hour Chart): Tactical 4h channel breakout
-       - Refinement (1-Hour Chart): Fine-tuned 1-hour / 15-minute precision trigger
+       - Intraday Trend (VWAP): Real-time institutional VWAP hold / pressure
+       - Momentum Trigger (EMA9): Fine-tuned 9 EMA momentum push / rejection
     """
     def __init__(self, tradier_token: Optional[str] = None):
         self.token = tradier_token or os.getenv("TRADIER_ACCESS_TOKEN")
@@ -31,7 +31,7 @@ class TimeframeConfluenceEngine:
         # In-memory bar cache (5-minute TTL) to guarantee 0 redundant network calls
         self._history_cache: Dict[str, Tuple[float, pd.DataFrame]] = {}
 
-    async def fetch_historical_bars(self, ticker: str, interval: str = "daily", days: int = 180, session: Optional[aiohttp.ClientSession] = None) -> pd.DataFrame:
+    async def fetch_historical_bars(self, ticker: str, interval: str = "daily", days: int = 250, session: Optional[aiohttp.ClientSession] = None) -> pd.DataFrame:
         """Fetch historical bars with in-memory caching."""
         cache_key = f"{ticker}_{interval}_{days}"
         now_ts = time.time()
@@ -99,8 +99,8 @@ class TimeframeConfluenceEngine:
     ) -> Dict[str, Any]:
         """
         Evaluates the full 3-timeframe triad based on expiration DTE:
-        - If DTE <= 3: Evaluates Daily -> 4H -> 1H (3-Day Short Cycle)
-        - If DTE > 3:  Evaluates Weekly -> Daily -> 4H (Weekly Swing Cycle)
+        - If DTE <= 3: Evaluates Daily -> Intraday VWAP -> EMA9 Momentum (3-Day Short Cycle)
+        - If DTE > 3:  Evaluates Weekly -> Daily -> Intraday VWAP (Weekly Swing Cycle)
         """
         is_3day_cycle = (dte <= 3)
         cycle_name = "3-DAY SHORT CYCLE" if is_3day_cycle else "WEEKLY SWING CYCLE"
@@ -119,8 +119,8 @@ class TimeframeConfluenceEngine:
                 "confluence_summary": "INSUFFICIENT_DATA",
                 "data_quality_warning": True,
                 "tf_1": {"name": "Daily (Primary Trend)", "status": True, "desc": "⚠️ Insufficient historical data (<30 bars)"},
-                "tf_2": {"name": "4-Hour / Intraday", "status": True, "desc": "⚠️ Data check bypassed"},
-                "tf_3": {"name": "1-Hour / Intraday", "status": True, "desc": "⚠️ Data check bypassed"},
+                "tf_2": {"name": "Intraday Trend (VWAP)", "status": True, "desc": "⚠️ Data check bypassed"},
+                "tf_3": {"name": "Momentum Trigger (EMA9)", "status": True, "desc": "⚠️ Data check bypassed"},
             }
 
         # 1. Evaluate Daily Metric
@@ -166,10 +166,9 @@ class TimeframeConfluenceEngine:
             data_quality_warning = True
             weekly_desc = "⚠️ Insufficient bars for weekly resample (<50 days)"
 
-        # 3. Evaluate 4-Hour Tactical Metric
-        # Approximate 4H structure from recent daily and intraday state
-        four_hour_bullish = True
-        four_hour_desc = "4H Structure Concordant"
+        # 3. Evaluate Intraday VWAP Hold Metric
+        vwap_bullish = True
+        vwap_desc = "VWAP Hold Concordant"
         
         if intraday_state:
             vwap = intraday_state.get("vwap", spot_price)
@@ -177,44 +176,50 @@ class TimeframeConfluenceEngine:
             hod = intraday_state.get("hod", spot_price * 1.02)
             
             if is_long:
-                four_hour_bullish = spot_price >= vwap or spot_price >= (hod * 0.99)
-                four_hour_desc = f"4H Tactical Hold > VWAP (${vwap:.2f})"
+                vwap_bullish = spot_price >= vwap or spot_price >= (hod * 0.99)
+                vwap_desc = f"Hold > VWAP (${vwap:.2f})"
             else:
-                four_hour_bullish = spot_price <= vwap or spot_price <= (lod * 1.01)
-                four_hour_desc = f"4H Tactical Pressure < VWAP (${vwap:.2f})"
+                vwap_bullish = spot_price <= vwap or spot_price <= (lod * 1.01)
+                vwap_desc = f"Pressure < VWAP (${vwap:.2f})"
+        else:
+            data_quality_warning = True
+            vwap_desc = "⚠️ Intraday state missing"
 
-        # 4. Evaluate 1-Hour Precision Metric (for 3-Day Cycle)
-        one_hour_bullish = True
-        one_hour_desc = "1H Momentum Precision Trigger"
+        # 4. Evaluate Intraday EMA9 Momentum Trigger Metric (for 3-Day Cycle)
+        ema9_bullish = True
+        ema9_desc = "EMA9 Momentum Push Trigger"
         
         if intraday_state:
             ema9 = intraday_state.get("ema9", spot_price)
             if is_long:
-                one_hour_bullish = spot_price >= ema9
-                one_hour_desc = f"1H Push > 9 EMA (${ema9:.2f})"
+                ema9_bullish = spot_price >= ema9
+                ema9_desc = f"Push > 9 EMA (${ema9:.2f})"
             else:
-                one_hour_bullish = spot_price <= ema9
-                one_hour_desc = f"1H Rejection < 9 EMA (${ema9:.2f})"
+                ema9_bullish = spot_price <= ema9
+                ema9_desc = f"Rejection < 9 EMA (${ema9:.2f})"
+        else:
+            data_quality_warning = True
+            ema9_desc = "⚠️ Intraday state missing"
 
         # Assemble Timeframe Matrix based on Cycle
         if is_3day_cycle:
-            # 3-Day Cycle: Daily (Trend) -> 4H (Execution) -> 1H (Refinement)
+            # 3-Day Cycle: Daily (Trend) -> Intraday (VWAP) -> Momentum (EMA9)
             tf_1_name = "Daily (Primary Trend)"
             tf_1_status = daily_bullish
             tf_1_desc = daily_desc
 
-            tf_2_name = "4-Hour (Execution)"
-            tf_2_status = four_hour_bullish
-            tf_2_desc = four_hour_desc
+            tf_2_name = "Intraday Trend (VWAP)"
+            tf_2_status = vwap_bullish
+            tf_2_desc = vwap_desc
 
-            tf_3_name = "1-Hour (Refinement)"
-            tf_3_status = one_hour_bullish
-            tf_3_desc = one_hour_desc
+            tf_3_name = "Momentum Trigger (EMA9)"
+            tf_3_status = ema9_bullish
+            tf_3_desc = ema9_desc
 
             all_concordant = (tf_1_status and tf_2_status and tf_3_status)
-            confluence_str = "Daily (Trend) ➔ 4H (Execution) ➔ 1H (Refinement)"
+            confluence_str = "Daily (Trend) -> Intraday VWAP -> EMA9 Momentum"
         else:
-            # Weekly Swing Cycle: Weekly (Macro) -> Daily (Confirmation) -> 4H (Execution)
+            # Weekly Swing Cycle: Weekly (Macro) -> Daily (Confirmation) -> Intraday (VWAP)
             tf_1_name = "Weekly (Macro Trend)"
             tf_1_status = weekly_bullish
             tf_1_desc = weekly_desc
@@ -223,12 +228,12 @@ class TimeframeConfluenceEngine:
             tf_2_status = daily_bullish
             tf_2_desc = daily_desc
 
-            tf_3_name = "4-Hour (Execution)"
-            tf_3_status = four_hour_bullish
-            tf_3_desc = four_hour_desc
+            tf_3_name = "Intraday Trend (VWAP)"
+            tf_3_status = vwap_bullish
+            tf_3_desc = vwap_desc
 
             all_concordant = (tf_1_status and tf_2_status and tf_3_status)
-            confluence_str = "Weekly (Macro) ➔ Daily (Confirmation) ➔ 4H (Execution)"
+            confluence_str = "Weekly (Macro) -> Daily (Confirmation) -> Intraday VWAP"
 
         matrix = {
             "cycle_name": cycle_name,
