@@ -126,6 +126,7 @@ class BlindSentimentAnalyzer:
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.0,
+                max_tokens=500,
                 timeout=12.0
             )
 

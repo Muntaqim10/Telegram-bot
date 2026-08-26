@@ -23,11 +23,10 @@ class OptionsPricer:
         self._chain_cache = {}
         self.iv_tracker = IVHistoryTracker()
 
-    async def get_target_expiration(self, ticker: str, min_dte: int = 1, max_dte: int = 30, session=None) -> str:
+    async def get_target_expiration(self, ticker: str, min_dte: int = 14, max_dte: int = 21, session=None) -> str:
         """
-        Dynamically queries Tradier for available option expirations for the ticker across 1-30 DTE.
-        Handles frequent 3-day / Mon-Wed-Fri short-cycle expirations (e.g. NVDA, SPY, QQQ, TSLA)
-        by selecting the nearest active expiration with DTE >= min_dte.
+        Dynamically queries Tradier for available option expirations targeting the 14-21 DTE window.
+        Provides multi-day swing trades with low theta decay, high ~0.75 Delta intrinsic leverage, and breathing room.
         """
         url = f"https://api.tradier.com/v1/markets/options/expirations?symbol={ticker}&includeAllRoots=true"
         try:
@@ -58,19 +57,32 @@ class OptionsPricer:
                     continue
             
             if valid_exps:
-                valid_exps.sort(key=lambda x: x[0])
-                log.info(f"[{ticker}] Dynamic expiration selected: {valid_exps[0][1]} ({valid_exps[0][0]} DTE)")
+                # Pick the expiration closest to ideal 18 DTE (middle of 14-21 DTE)
+                valid_exps.sort(key=lambda x: abs(x[0] - 18))
+                log.info(f"[{ticker}] Dynamic 14-21 DTE expiration selected: {valid_exps[0][1]} ({valid_exps[0][0]} DTE)")
                 return valid_exps[0][1]
             elif expirations_list:
-                # If nothing in [min_dte, max_dte], select the nearest available real exchange expiration
-                log.info(f"[{ticker}] No expirations in {min_dte}-{max_dte} DTE. Using nearest real exchange date: {expirations_list[0]}")
-                return expirations_list[0]
+                # If no date falls precisely in [14, 21], find the active date closest to 18 DTE with DTE >= 10
+                all_exps = []
+                for exp_str in expirations_list:
+                    try:
+                        exp_dt = datetime.strptime(exp_str, "%Y-%m-%d").date()
+                        dte = (exp_dt - today).days
+                        if dte >= 10:
+                            all_exps.append((abs(dte - 18), exp_str, dte))
+                    except ValueError:
+                        continue
+                if all_exps:
+                    all_exps.sort(key=lambda x: x[0])
+                    log.info(f"[{ticker}] Closest available 14-21 DTE swing expiration: {all_exps[0][1]} ({all_exps[0][2]} DTE)")
+                    return all_exps[0][1]
+                return expirations_list[-1]
         except Exception as e:
             log.warning(f"Failed to fetch dynamic expirations for {ticker}: {e}.")
             
-        # Absolute last resort fallback: next Friday
+        # Absolute last resort fallback: Friday closest to 18 days out
         now = datetime.now()
-        target_date = now + timedelta(days=max(1, min_dte))
+        target_date = now + timedelta(days=18)
         days_to_friday = (4 - target_date.weekday()) % 7
         target_expiration = target_date + timedelta(days=days_to_friday)
         return target_expiration.strftime("%Y-%m-%d")

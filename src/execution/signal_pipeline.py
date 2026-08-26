@@ -79,19 +79,19 @@ class SignalPipeline:
         win_prob = xgb_result['win_prob']
         verdict = xgb_result['verdict']
 
-        # Conviction tiers based on model output
-        if win_prob >= 0.75:
+        # Conviction tiers based on model output & sentiment
+        if win_prob >= 0.70:
             conviction = "🟢 HIGH"
-        elif win_prob >= 0.55:
+        elif win_prob >= 0.45 or sent_score >= 0.55:
             conviction = "🟡 MEDIUM"
         else:
             conviction = "🔴 LOW"
 
         log.info(f"[{ticker}] AI Filters: Sentiment={sent_score:.2f}, XGB={verdict} ({win_prob:.2f}), Conviction={conviction}")
         
-        # Enforce Fakeout Filter: Only high conviction (>=0.75) and CONCORDANT
-        if win_prob < 0.75 or verdict != "CONCORDANT":
-            log.warning(f"[{ticker}] Alert suppressed by Fakeout Filter: XGB={verdict} ({win_prob:.2f}). Conviction: {conviction}")
+        # Enforce Fakeout Filter: Suppress only low-probability traps or setups fighting sharp opposite news
+        if win_prob < 0.40 or (direction == "Long" and sent_score < 0.30) or (direction == "Short" and sent_score > 0.70):
+            log.warning(f"[{ticker}] Alert suppressed by Fakeout Filter: XGB={verdict} ({win_prob:.2f}), Sentiment={sent_score:.2f}. Conviction: {conviction}")
             return
             
         log.info(f"✅ {ticker} {direction} Conviction: {conviction}. Dispatching Alert.")
@@ -155,7 +155,7 @@ class SignalPipeline:
             try: z_vol_val = float(z_vol_val)
             except: z_vol_val = 0.0
 
-        if expected_move_pct < min_required_move and z_vol_val < 2.0:
+        if expected_move_pct < min_required_move and z_vol_val < 1.8:
             log.warning(
                 f"[{ticker}] Alert suppressed by Velocity Gate: {tier_info['tier']} expected move ({expected_move_pct:.1f}%) "
                 f"is below the minimum required threshold ({min_required_move}%)."
@@ -163,8 +163,8 @@ class SignalPipeline:
             self.risk_manager.remove_position(ticker)
             return
 
-        # 4. Options Pricing Check (Dynamic Expirations: 1-30 DTE handling 3-day / short-cycle expirations on NVDA/SPY/QQQ & weeklies)
-        expiration = await self.options_pricer.get_target_expiration(ticker, min_dte=1, max_dte=30, session=session)
+        # 4. Options Pricing Check (Targeting 14-21 DTE for optimal swing leverage and low theta decay)
+        expiration = await self.options_pricer.get_target_expiration(ticker, min_dte=14, max_dte=21, session=session)
         target_strike = float(round(signal["entry_price"])) # Spot reference (OptionsPricer optimizes to ~0.75 Delta ITM)
 
         # 4.1 Evaluate Multi-Timeframe Triad Confluence (Weekly/Daily/4H for Weeklies vs Daily/4H/1H for 3-Day)

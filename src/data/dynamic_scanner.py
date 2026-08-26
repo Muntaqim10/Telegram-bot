@@ -36,29 +36,29 @@ CANDIDATE_POOL = [
 MEGA_CAP_TICKERS = {
     "SPY", "QQQ", "IWM", "DIA", "GLD", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", 
     "TSLA", "AVGO", "AMD", "NFLX", "TSM", "ASML", "LLY", "NVO", "LMT", "QCOM", "NOW", "ADBE",
-    "COST", "WMT", "JPM", "GS", "V", "MA", "UNH", "CAT", "GE", "DIS", "BA"
+    "COST", "WMT", "JPM", "GS", "V", "MA", "UNH", "CAT", "GE", "DIS", "BA", "XOM", "CVX",
+    "MRVL", "ORCL", "CRM", "INTC", "CSCO", "IBM", "TXN"
 }
 
 def get_asset_tier_info(ticker: str) -> dict:
     """
     Returns the classification tier and minimum expected move threshold for a ticker.
-    - Mega-Caps / Core Indices: Minimum 4.0% - 5.0% expected move
-    - High-Beta Mid-Caps & Runners: Minimum 18.0% - 30.0% expected move
+    Calibrated for 14-21 DTE options where a 2.5% to 4.5% stock move produces +30% to +60% option profit.
     """
     sym = ticker.upper()
     if sym in MEGA_CAP_TICKERS:
         return {
             "tier": "MEGA-CAP",
-            "min_move_pct": 4.5,
+            "min_move_pct": 2.5,
             "label": "🏢 Mega-Cap Leader",
-            "target_desc": "5%+ Expansion Target"
+            "target_desc": "2.5%+ Swing Target (+25-35% Option PnL)"
         }
     else:
         return {
             "tier": "MID-CAP",
-            "min_move_pct": 18.0,
+            "min_move_pct": 4.5,
             "label": "🚀 High-Beta Mid-Cap Runner",
-            "target_desc": "20-30%+ Explosive Target"
+            "target_desc": "4.5%+ Momentum Target (+45-65% Option PnL)"
         }
 
 class DynamicTickerScanner:
