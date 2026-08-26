@@ -58,38 +58,47 @@ def prepare_ml_training_data(csv_path: Optional[str] = None, output_parquet: str
     else:
         df["date"] = pd.Timestamp.now()
 
-    # The 9 features xgb_micro_v2.py expects
+    # The 9 real features xgb_micro_v2.py expects for 14-21 DTE options
     real_features = []
     placeholder_features = []
 
-    # 1. relative_volume (map from z_vol if relative_volume not present)
+    # 1. relative_volume (mapped from z_vol if relative_volume not present)
     if "relative_volume" in df.columns:
         real_features.append("relative_volume")
     elif "z_vol" in df.columns:
         df["relative_volume"] = df["z_vol"].astype(float)
         real_features.append("relative_volume (mapped from 'z_vol')")
     else:
-        df["relative_volume"] = 1.0
-        placeholder_features.append("relative_volume (filled with constant 1.0)")
+        df["relative_volume"] = 1.5
+        placeholder_features.append("relative_volume (default 1.5)")
 
-    # 2. Defaults for ratio, correlation, and boolean trend flags
+    # 2. direction_code
+    if "direction_code" in df.columns:
+        real_features.append("direction_code")
+    elif "direction" in df.columns:
+        df["direction_code"] = (df["direction"].astype(str).str.upper() == "LONG").astype(int)
+        real_features.append("direction_code (mapped from 'direction')")
+    else:
+        df["direction_code"] = 1
+        placeholder_features.append("direction_code (default 1)")
+
+    # 3. Core quantitative features
     feature_defaults = {
-        "entry_time_minute": 570.0,   # 9:30 AM market open
-        "vwap_ratio": 1.0,           # Neutral 1.0 ratio
-        "ema9_ratio": 1.0,           # Neutral 1.0 ratio
-        "ema_trend": 0,              # Neutral boolean flag
-        "ema_trend_5m": 0,           # Neutral boolean flag
-        "spy_correlation": 0.5,      # Neutral correlation
-        "hod_ratio": 1.0,            # Neutral 1.0 ratio
-        "lod_ratio": 1.0             # Neutral 1.0 ratio
+        "rsi_14": 55.0,
+        "chop_14": 45.0,
+        "expected_move_pct": 4.5,
+        "hist_vol_20": 0.35,
+        "sma20_ratio": 1.02,
+        "sma_spread": 0.03,
+        "breakout_pct": 0.015
     }
 
     for feat, default_val in feature_defaults.items():
-        if feat in df.columns:
+        if feat in df.columns and df[feat].notna().any():
             real_features.append(feat)
         else:
             df[feat] = default_val
-            placeholder_features.append(f"{feat} (filled with constant {default_val})")
+            placeholder_features.append(f"{feat} (filled with fallback {default_val})")
 
     # Clean audit printout to console
     print("\n" + "=" * 68)

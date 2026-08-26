@@ -175,27 +175,39 @@ class DonchianSwingStrategy:
         else:
             stop_loss = close + (1.5 * atr)
 
+        sma20 = float(row.get("SMA_20", close))
+        sma60 = float(row.get("SMA_60", close))
+        sma20_ratio = round(close / sma20, 4) if sma20 > 0 else 1.0
+        sma_spread = round((sma20 - sma60) / sma60, 4) if sma60 > 0 else 0.0
+        breakout_lvl = float(row["R_20d"]) if direction == "Long" else float(row["S_20d"])
+        breakout_pct = round(abs(close - breakout_lvl) / close, 4) if close > 0 else 0.0
+
         return {
             "ticker": ticker,
             "entry_price": close,
             "direction": direction,
+            "direction_code": 1 if direction == "Long" else 0,
             "catalyst_type": catalyst_type,
             "timestamp": datetime.now(),
             "timeframe": "SWING",
-            "vwap_ratio": 1.0,  # Not applicable on daily bars
+            "vwap_ratio": sma20_ratio,  # On daily bars, distance to SMA20 serves as the primary mean-reversion anchor
             "ema9_ratio": 1.0,
             "ema_trend_bullish": 1 if direction == "Long" else 0,
             "ema_trend_5m_bullish": 1 if direction == "Long" else 0,
             "hod_ratio": 1.0,
             "lod_ratio": 1.0,
             "volume": row.get("volume", 0),
-            "z_vol": z_vol,
-            "rsi_14": rsi,
-            "chop_14": chop,
-            "atr_14": atr,
+            "z_vol": round(float(z_vol), 3),
+            "relative_volume": round(float(z_vol), 3),
+            "rsi_14": round(float(rsi), 2),
+            "chop_14": round(float(chop), 2),
+            "atr_14": round(float(atr), 2),
+            "sma20_ratio": sma20_ratio,
+            "sma_spread": sma_spread,
+            "breakout_pct": breakout_pct,
             "stop_loss": stop_loss,
             "take_profit": take_profit,
-            "breakout_level": float(row["R_20d"]) if direction == "Long" else float(row["S_20d"]),
+            "breakout_level": breakout_lvl,
             "donchian_high": float(row.get("R_20d", close)),
             "donchian_low": float(row.get("S_20d", close)),
             "tf_confluence": f"Daily Donchian + SMA20/60 + CHOP({chop:.1f}) + RSI({rsi:.1f})"

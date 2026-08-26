@@ -85,9 +85,8 @@ class XGBMicroSentinelV2:
                 return
                 
             features = [
-                "entry_time_minute", "relative_volume", "vwap_ratio", 
-                "ema9_ratio", "ema_trend", "ema_trend_5m", 
-                "spy_correlation", "hod_ratio", "lod_ratio"
+                "relative_volume", "rsi_14", "chop_14", "expected_move_pct",
+                "hist_vol_20", "sma20_ratio", "sma_spread", "breakout_pct", "direction_code"
             ]
             
             # Ensure all features exist
@@ -107,7 +106,7 @@ class XGBMicroSentinelV2:
             scale_weight = float(num_neg / num_pos) if num_pos > 0 else 1.0
 
             params = {
-                'max_depth': 5,
+                'max_depth': 4,
                 'eta': 0.05,
                 'objective': 'binary:logistic',
                 'subsample': 0.8,
@@ -117,7 +116,7 @@ class XGBMicroSentinelV2:
             }
             
             evals = [(dtrain, 'train'), (dval, 'val')]
-            self.model = self.xgb.train(params, dtrain, num_boost_round=200, evals=evals, verbose_eval=False)
+            self.model = self.xgb.train(params, dtrain, num_boost_round=150, evals=evals, verbose_eval=False)
             self._is_trained = True
             
             os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
@@ -127,7 +126,7 @@ class XGBMicroSentinelV2:
             val_labels = (val_preds > 0.5).astype(int)
             val_accuracy = np.mean(val_labels == y_val) if len(y_val) > 0 else 1.0
             
-            log.info(f"XGBMicroSentinelV2 trained successfully! Out-of-Sample Validation Accuracy: {val_accuracy*100:.1f}%. Saved to {self.model_path}")
+            log.info(f"XGBMicroSentinelV2 trained successfully on 14-21 DTE features! Validation Accuracy: {val_accuracy*100:.1f}%. Saved to {self.model_path}")
             
             return val_accuracy
         except Exception as e:
@@ -142,26 +141,19 @@ class XGBMicroSentinelV2:
                 self._load_model()
 
         if not self._is_trained or not self.model:
-            return {"verdict": "NOT_CHECKED", "win_prob": 0.50}
+            return {"verdict": "NOT_CHECKED", "win_prob": 0.55}
 
         try:
-            entry_time = features.get("entry_time_minute", 585)
-            rel_vol = features.get("relative_volume", 1.0)
-            vwap_ratio = features.get("vwap_ratio", 1.0)
-            ema9_ratio = features.get("ema9_ratio", 1.0)
-            ema_trend = features.get("ema_trend", 1)
-            spy_corr = features.get("spy_correlation", 1.0)
-            
             X_live = pd.DataFrame([{
-                "entry_time_minute": entry_time, 
-                "relative_volume": rel_vol,
-                "vwap_ratio": vwap_ratio,
-                "ema9_ratio": ema9_ratio,
-                "ema_trend": ema_trend,
-                "ema_trend_5m": features.get("ema_trend_5m", 1),
-                "spy_correlation": spy_corr,
-                "hod_ratio": features.get("hod_ratio", 1.0),
-                "lod_ratio": features.get("lod_ratio", 1.0)
+                "relative_volume": float(features.get("relative_volume") or features.get("z_vol") or 1.5),
+                "rsi_14": float(features.get("rsi_14", 55.0)),
+                "chop_14": float(features.get("chop_14", 45.0)),
+                "expected_move_pct": float(features.get("expected_move_pct", 4.0)),
+                "hist_vol_20": float(features.get("hist_vol_20", 0.35)),
+                "sma20_ratio": float(features.get("sma20_ratio", features.get("vwap_ratio", 1.0))),
+                "sma_spread": float(features.get("sma_spread", 0.02)),
+                "breakout_pct": float(features.get("breakout_pct", 0.01)),
+                "direction_code": int(features.get("direction_code", 1))
             }])
             if hasattr(self.model, "feature_names") and self.model.feature_names:
                 cols = [c for c in self.model.feature_names if c in X_live.columns]

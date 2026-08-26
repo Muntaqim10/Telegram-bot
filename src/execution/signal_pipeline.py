@@ -65,15 +65,15 @@ class SignalPipeline:
             sig_ts = datetime.now()
 
         features = {
-            "entry_time_minute": sig_ts.hour * 60 + sig_ts.minute,
-            "relative_volume": signal.get("relative_volume", 1.0),
-            "vwap_ratio": signal.get("vwap_ratio", 1.0),
-            "ema9_ratio": signal.get("ema9_ratio", 1.0),
-            "ema_trend": signal.get("ema_trend_bullish", 1),
-            "ema_trend_5m": signal.get("ema_trend_5m_bullish", 1),
-            "spy_correlation": spy_vwap_ratio,
-            "hod_ratio": signal.get("hod_ratio", 1.0),
-            "lod_ratio": signal.get("lod_ratio", 1.0)
+            "relative_volume": float(signal.get("relative_volume") or signal.get("z_vol") or 1.5),
+            "rsi_14": float(signal.get("rsi_14", 55.0)),
+            "chop_14": float(signal.get("chop_14", 45.0)),
+            "expected_move_pct": float(signal.get("expected_move_pct", 4.0)),
+            "hist_vol_20": float(signal.get("hist_vol_20", 0.35)),
+            "sma20_ratio": float(signal.get("sma20_ratio", vwap_ratio)),
+            "sma_spread": float(signal.get("sma_spread", 0.02)),
+            "breakout_pct": float(signal.get("breakout_pct", 0.01)),
+            "direction_code": 1 if direction == "Long" else 0
         }
         xgb_result = self.xgb_model.validate_setup(features)
         win_prob = xgb_result['win_prob']
