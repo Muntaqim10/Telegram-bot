@@ -162,7 +162,12 @@ class XGBMicroSentinelV2:
             dtest = self.xgb.DMatrix(X_live)
             prob = self.model.predict(dtest)[0]
             
-            verdict = "CONCORDANT" if prob >= 0.75 else "HALLUCINATION"
+            if prob >= 0.48:
+                verdict = "CONCORDANT"
+            elif prob >= 0.35:
+                verdict = "AMBIGUOUS"
+            else:
+                verdict = "HALLUCINATION"
             return {"verdict": verdict, "win_prob": float(prob)}
         except Exception as e:
             log.warning(f"XGBMicroSentinelV2 validation error: {e}")

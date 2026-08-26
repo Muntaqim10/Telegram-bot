@@ -6,40 +6,10 @@ from typing import List, Dict, Any
 
 log = logging.getLogger(__name__)
 
-# Expanded 350+ Liquid, Optionable US Equities Universe (S&P 100, Nasdaq 100, High-Beta Tech, Growth & Meme Leaders)
-EXPANDED_UNIVERSE = [
-    # Core Indexes & Mega-Cap Tech
-    "SPY", "QQQ", "IWM", "DIA", "GLD", "SLV", "TLT", "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA",
-    # High-Beta Semiconductors & AI Hardware
-    "AMD", "AVGO", "TSM", "QCOM", "MRVL", "ASML", "SMCI", "ARM", "MU", "LRCX", "AMAT", "DELL", "ALAB", "INTC", "TXN",
-    "KLAC", "SNPS", "CDNS", "ADI", "NXPI", "MCHP", "ON", "MPWR", "TER", "WDC", "STX",
-    # Nuclear Energy, Utilities & AI Power Infrastructure
-    "CEG", "VST", "CCJ", "SMR", "OKLO", "FSLR", "ENPH", "NEE", "DUK", "SO", "AEP", "SRE", "D", "EXC", "XEL", "GEV",
-    # Defense, Aerospace, Space Tech & eVTOL
-    "LMT", "RTX", "NOC", "BA", "GD", "LHX", "HII", "RKLB", "ASTS", "ACHR", "JOBY", "LUNR", "PL",
-    # Quantum & Next-Gen Computing
-    "IONQ", "RGTI", "QBTS", "QUBT",
-    # Crypto Proxies, Bitcoin Miners & High-Beta Fintech
-    "COIN", "MSTR", "MARA", "RIOT", "CLSK", "WULF", "CIFR", "HOOD", "CVNA", "UPST", "AFRM", "SOFI", "SOUN", "APP", "PYPL",
-    "SQ", "IBKR", "COUP", "NU", "TOST", "MELI", "SE", "GRAB",
-    # Cloud, Cybersecurity & Enterprise SaaS
-    "PLTR", "CRWD", "PANW", "SNOW", "DDOG", "NET", "ZS", "ADBE", "INTU", "NOW", "FTNT", "MDB", "TEAM", "PATH",
-    "CRM", "ORCL", "SAP", "WDAY", "HUBS", "TWLO", "DOCU", "SPLK", "OKTA", "ESTC", "MNDT", "CYBR", "CFLT", "GTLB",
-    # High-Growth Platforms, Consumer, Retail & Media
-    "NFLX", "DIS", "SHOP", "ROKU", "UBER", "ABNB", "DASH", "DKNG", "CELH", "U", "RDDT", "CAVA", "HIMS", "TEM", "LULU",
-    "NKE", "COST", "WMT", "TGT", "HD", "LOW", "MCD", "SBUX", "CMG", "DPZ", "YUM", "BKNG", "EXPE", "PINS", "SNAP", "SPOT",
-    # Biotech, Pharmaceuticals & Healthcare Leaders
-    "MRNA", "VRTX", "REGN", "LLY", "ISRG", "NVO", "BIIB", "GILD", "UNH", "JNJ", "PFE", "ABBV", "TMO", "DHR", "ABT",
-    "BMY", "AMGN", "CVS", "CI", "ELV", "HUM", "SYK", "BSX", "MDT", "EW", "DXCM", "ALNY", "INCY", "BMRN",
-    # Banking, Financials & Payments
-    "JPM", "GS", "MS", "V", "MA", "BAC", "WFC", "C", "AXP", "BLK", "SCHW", "PNC", "USB", "TFC", "BK", "COF",
-    # Energy, Oil & Industrial Leaders
-    "XOM", "CVX", "COP", "SLB", "EOG", "OXY", "HAL", "BKR", "MPC", "PSX", "VLO", "CAT", "DE", "GE", "HON", "UNP", "UPS", "FDX", "ETN", "PH", "EMR",
-    # China Tech & Global ADRs
-    "BABA", "PDD", "BIDU", "JD", "NTES", "LI", "NIO", "XPEV", "FUTU", "TME",
-    # High-Short, Squeeze & High-Momentum Favorites
-    "GME", "AMC", "DJT", "RIVN", "LCID", "CHWY", "KSS", "BYND", "SPCE", "OPEN", "AI"
-]
+from src.data.dynamic_scanner import CANDIDATE_POOL
+
+# Expanded 250+ Liquid, Optionable US Equities Universe (Synchronized with CANDIDATE_POOL)
+EXPANDED_UNIVERSE = CANDIDATE_POOL
 
 class MarketGainerDiscovery:
     """

@@ -134,7 +134,7 @@ async def run_pipeline():
     
     token = os.getenv("TRADIER_ACCESS_TOKEN")
     engine = BacktestEngine(token)
-    await engine.run_backtest(CANDIDATE_POOL, max_holding_days=10, lookback_days=365)
+    await engine.run_backtest(CANDIDATE_POOL, max_holding_days=10, lookback_days=730)
     
     # 3. Bridge Backtest CSV to Parquet Training Data
     log.info("Step 3/4: Converting latest backtest CSV to ML training parquet format...")

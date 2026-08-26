@@ -41,19 +41,28 @@ class BacktestEngine:
             "end": end_date.strftime("%Y-%m-%d")
         }
         
-        async with session.get(url, headers=headers, params=params) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                days_data = data.get("history", {}).get("day", [])
-                if not isinstance(days_data, list):
-                    days_data = [days_data]
-                df = pd.DataFrame(days_data)
-                if not df.empty:
-                    df["date"] = pd.to_datetime(df["date"])
-                    df.set_index("date", inplace=True)
-                    for col in ["open", "high", "low", "close", "volume"]:
-                        df[col] = pd.to_numeric(df[col], errors="coerce")
-                    return df.dropna(subset=["close"])
+        try:
+            async with session.get(url, headers=headers, params=params) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if not data or not isinstance(data, dict):
+                        return pd.DataFrame()
+                    history = data.get("history") or {}
+                    days_data = history.get("day", []) if isinstance(history, dict) else []
+                    if not isinstance(days_data, list):
+                        days_data = [days_data]
+                    if not days_data or not days_data[0]:
+                        return pd.DataFrame()
+                    df = pd.DataFrame(days_data)
+                    if not df.empty and "date" in df.columns:
+                        df["date"] = pd.to_datetime(df["date"])
+                        df.set_index("date", inplace=True)
+                        for col in ["open", "high", "low", "close", "volume"]:
+                            if col in df.columns:
+                                df[col] = pd.to_numeric(df[col], errors="coerce")
+                        return df.dropna(subset=["close"])
+        except Exception as e:
+            log.warning(f"Error fetching daily history for {ticker}: {e}")
         return pd.DataFrame()
 
     @staticmethod

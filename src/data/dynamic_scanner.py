@@ -5,39 +5,49 @@ from typing import List
 
 log = logging.getLogger(__name__)
 
-# Broad pool of dynamic candidates optimized for HIGH OPTIONS LEVERAGE (High Beta, High IV, Massive Gamma potential)
+# Broad pool of 250+ dynamic candidates optimized for HIGH OPTIONS LEVERAGE (High Beta, High IV, Liquid Option Chains)
 CANDIDATE_POOL = [
     # Core Indexes & Mag 7
-    "SPY", "QQQ", "IWM", "DIA", "GLD", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
+    "SPY", "QQQ", "IWM", "DIA", "GLD", "SLV", "TLT", "SMH", "XLE", "XLF", "XLK",
+    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA",
     # High-Beta Semiconductors & AI Hardware
     "AMD", "AVGO", "TSM", "QCOM", "MRVL", "ASML", "SMCI", "ARM", "MU", "LRCX", "AMAT", "DELL", "ALAB", "INTC", "TXN",
+    "KLAC", "SNPS", "CDNS", "ADI", "NXPI", "MCHP", "ON", "MPWR", "TER", "WDC", "STX", "SIMO",
     # Nuclear Energy & AI Power Infrastructure
-    "CEG", "VST", "CCJ", "SMR", "OKLO", "FSLR", "ENPH",
-    # Defense, Aerospace & Space Tech
-    "LMT", "RTX", "NOC", "BA", "RKLB", "ASTS", "ACHR", "JOBY",
+    "CEG", "VST", "CCJ", "SMR", "OKLO", "FSLR", "ENPH", "NEE", "DUK", "SO", "AEP", "SRE", "D", "EXC", "XEL", "GEV", "AES",
+    # Defense, Aerospace, Space Tech & Robotics
+    "LMT", "RTX", "NOC", "BA", "GD", "LHX", "HII", "RKLB", "ASTS", "ACHR", "JOBY", "LUNR", "PL", "AXON",
     # Quantum & Next-Gen Computing
-    "IONQ", "RGTI", "QBTS",
-    # Crypto Proxies & High-Beta Fintech
+    "IONQ", "RGTI", "QBTS", "QUBT",
+    # Crypto Proxies, Bitcoin Miners & High-Beta Fintech
     "COIN", "MSTR", "MARA", "RIOT", "CLSK", "WULF", "CIFR", "HOOD", "CVNA", "UPST", "AFRM", "SOFI", "SOUN", "APP", "PYPL",
+    "SQ", "IBKR", "NU", "TOST", "MELI", "SE", "GRAB", "FLUT",
     # Cloud, Cybersecurity & Enterprise SaaS
     "PLTR", "CRWD", "PANW", "SNOW", "DDOG", "NET", "ZS", "ADBE", "INTU", "NOW", "FTNT", "MDB", "TEAM", "PATH",
+    "CRM", "ORCL", "SAP", "WDAY", "HUBS", "TWLO", "DOCU", "OKTA", "ESTC", "CYBR", "CFLT", "GTLB",
     # High-Growth Platforms, Consumer, Retail & Media
-    "NFLX", "DIS", "SHOP", "SQ", "ROKU", "UBER", "ABNB", "DASH", "DKNG", "CELH", "U", "RDDT", "CAVA", "HIMS", "TEM", "LULU", "NKE", "COST", "WMT", "TGT",
-    # Biotech & Healthcare Movers
-    "MRNA", "VRTX", "REGN", "LLY", "ISRG", "NVO", "BIIB", "GILD", "UNH", "JNJ",
-    # Financials & Industrial Leaders
-    "JPM", "GS", "MS", "V", "MA", "CAT", "GE",
-    # China Tech & Global Movers
-    "BABA", "PDD", "BIDU",
-    # Meme & Momentum Breakout Favorites
-    "GME", "AMC", "DJT", "RIVN", "LCID"
+    "NFLX", "DIS", "SHOP", "ROKU", "UBER", "ABNB", "DASH", "DKNG", "CELH", "U", "RDDT", "CAVA", "HIMS", "TEM", "LULU",
+    "NKE", "COST", "WMT", "TGT", "HD", "LOW", "MCD", "SBUX", "CMG", "DPZ", "YUM", "BKNG", "EXPE", "PINS", "SNAP", "SPOT", "URBN",
+    # Biotech, Pharmaceuticals & Healthcare Leaders
+    "MRNA", "VRTX", "REGN", "LLY", "ISRG", "NVO", "BIIB", "GILD", "UNH", "JNJ", "PFE", "ABBV", "TMO", "DHR", "ABT",
+    "BMY", "AMGN", "CVS", "CI", "ELV", "HUM", "SYK", "BSX", "MDT", "EW", "DXCM", "ALNY", "INCY", "BMRN",
+    # Banking, Financials & Payments
+    "JPM", "GS", "MS", "V", "MA", "BAC", "WFC", "C", "AXP", "BLK", "SCHW", "PNC", "USB", "TFC", "BK", "COF",
+    # Energy, Oil, Gas & Industrials
+    "XOM", "CVX", "COP", "SLB", "EOG", "OXY", "HAL", "BKR", "MPC", "PSX", "VLO", "CAT", "DE", "GE", "HON", "UNP", "UPS", "FDX", "ETN", "PH", "EMR",
+    "KMI", "ACM", "B", "INSW", "MLI", "BTSG",
+    # China Tech & Global ADRs
+    "BABA", "PDD", "BIDU", "JD", "NTES", "LI", "NIO", "XPEV", "FUTU", "TME",
+    # High-Short, Squeeze & High-Momentum Favorites
+    "GME", "AMC", "DJT", "RIVN", "LCID", "CHWY", "KSS", "BYND", "SPCE", "OPEN", "AI"
 ]
 
 MEGA_CAP_TICKERS = {
-    "SPY", "QQQ", "IWM", "DIA", "GLD", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", 
-    "TSLA", "AVGO", "AMD", "NFLX", "TSM", "ASML", "LLY", "NVO", "LMT", "QCOM", "NOW", "ADBE",
-    "COST", "WMT", "JPM", "GS", "V", "MA", "UNH", "CAT", "GE", "DIS", "BA", "XOM", "CVX",
-    "MRVL", "ORCL", "CRM", "INTC", "CSCO", "IBM", "TXN"
+    "SPY", "QQQ", "IWM", "DIA", "GLD", "SLV", "TLT", "SMH", "XLE", "XLF", "XLK",
+    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA", "AVGO", "AMD", 
+    "NFLX", "TSM", "ASML", "LLY", "NVO", "LMT", "QCOM", "NOW", "ADBE", "COST", "WMT", 
+    "JPM", "GS", "V", "MA", "UNH", "CAT", "GE", "DIS", "BA", "XOM", "CVX", "COP",
+    "MRVL", "ORCL", "CRM", "INTC", "CSCO", "IBM", "TXN", "HD", "MCD", "AMGN", "PFE", "ABBV"
 }
 
 def get_asset_tier_info(ticker: str) -> dict:

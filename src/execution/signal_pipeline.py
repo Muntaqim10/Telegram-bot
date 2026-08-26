@@ -79,10 +79,10 @@ class SignalPipeline:
         win_prob = xgb_result['win_prob']
         verdict = xgb_result['verdict']
 
-        # Conviction tiers based on model output & sentiment
-        if win_prob >= 0.70:
+        # Conviction tiers based on calibrated model output & sentiment
+        if win_prob >= 0.48 or verdict == "CONCORDANT":
             conviction = "🟢 HIGH"
-        elif win_prob >= 0.45 or sent_score >= 0.55:
+        elif win_prob >= 0.36 or sent_score >= 0.55:
             conviction = "🟡 MEDIUM"
         else:
             conviction = "🔴 LOW"
@@ -90,7 +90,7 @@ class SignalPipeline:
         log.info(f"[{ticker}] AI Filters: Sentiment={sent_score:.2f}, XGB={verdict} ({win_prob:.2f}), Conviction={conviction}")
         
         # Enforce Fakeout Filter: Suppress only low-probability traps or setups fighting sharp opposite news
-        if win_prob < 0.40 or (direction == "Long" and sent_score < 0.30) or (direction == "Short" and sent_score > 0.70):
+        if win_prob < 0.35 or verdict == "HALLUCINATION" or (direction == "Long" and sent_score < 0.30) or (direction == "Short" and sent_score > 0.70):
             log.warning(f"[{ticker}] Alert suppressed by Fakeout Filter: XGB={verdict} ({win_prob:.2f}), Sentiment={sent_score:.2f}. Conviction: {conviction}")
             return
             
