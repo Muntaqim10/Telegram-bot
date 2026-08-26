@@ -226,6 +226,7 @@ CRITICAL INSTRUCTIONS:
             ],
             response_format={"type": "json_object"},
             temperature=0.0,
+            max_tokens=800,
             timeout=25.0
         )
 

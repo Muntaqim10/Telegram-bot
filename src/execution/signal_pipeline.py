@@ -59,44 +59,7 @@ class SignalPipeline:
             
         final_warning_tag = "⚠️ " + " | ".join(warnings) if warnings else None
 
-        # 3. XGBoost Sentinel Check → Conviction Tier (never a silent kill)
-        sig_ts = signal.get("timestamp")
-        if sig_ts is None or not hasattr(sig_ts, "hour"):
-            sig_ts = datetime.now()
-
-        features = {
-            "relative_volume": float(signal.get("relative_volume") or signal.get("z_vol") or 1.5),
-            "rsi_14": float(signal.get("rsi_14", 55.0)),
-            "chop_14": float(signal.get("chop_14", 45.0)),
-            "expected_move_pct": float(signal.get("expected_move_pct", 4.0)),
-            "hist_vol_20": float(signal.get("hist_vol_20", 0.35)),
-            "sma20_ratio": float(signal.get("sma20_ratio", vwap_ratio)),
-            "sma_spread": float(signal.get("sma_spread", 0.02)),
-            "breakout_pct": float(signal.get("breakout_pct", 0.01)),
-            "direction_code": 1 if direction == "Long" else 0
-        }
-        xgb_result = self.xgb_model.validate_setup(features)
-        win_prob = xgb_result['win_prob']
-        verdict = xgb_result['verdict']
-
-        # Conviction tiers based on calibrated model output & sentiment
-        if win_prob >= 0.48 or verdict == "CONCORDANT":
-            conviction = "🟢 HIGH"
-        elif win_prob >= 0.36 or sent_score >= 0.55:
-            conviction = "🟡 MEDIUM"
-        else:
-            conviction = "🔴 LOW"
-
-        log.info(f"[{ticker}] AI Filters: Sentiment={sent_score:.2f}, XGB={verdict} ({win_prob:.2f}), Conviction={conviction}")
-        
-        # Enforce Fakeout Filter: Suppress only low-probability traps or setups fighting sharp opposite news
-        if win_prob < 0.35 or verdict == "HALLUCINATION" or (direction == "Long" and sent_score < 0.30) or (direction == "Short" and sent_score > 0.70):
-            log.warning(f"[{ticker}] Alert suppressed by Fakeout Filter: XGB={verdict} ({win_prob:.2f}), Sentiment={sent_score:.2f}. Conviction: {conviction}")
-            return
-            
-        log.info(f"✅ {ticker} {direction} Conviction: {conviction}. Dispatching Alert.")
-
-        # Extract breakout level for fast thesis invalidation (Momentum Movers, ORB, Donchian, CRB)
+        # 3. Risk Levels & Invalidation Extraction
         invalidation_level = signal.get("invalidation_level") or signal.get("breakout_level")
         if invalidation_level is None:
             if direction == "Long":
@@ -162,6 +125,40 @@ class SignalPipeline:
             )
             self.risk_manager.remove_position(ticker)
             return
+
+        # 3.6 XGBoost Sentinel Check → Conviction Tier
+        features = {
+            "relative_volume": float(signal.get("relative_volume") or signal.get("z_vol") or 1.5),
+            "rsi_14": float(signal.get("rsi_14", 55.0)),
+            "chop_14": float(signal.get("chop_14", 45.0)),
+            "expected_move_pct": round(float(expected_move_pct), 2),
+            "hist_vol_20": float(signal.get("hist_vol_20", 0.35)),
+            "sma20_ratio": float(signal.get("sma20_ratio", vwap_ratio)),
+            "sma_spread": float(signal.get("sma_spread", 0.02)),
+            "breakout_pct": float(signal.get("breakout_pct", 0.01)),
+            "direction_code": 1 if direction == "Long" else 0
+        }
+        xgb_result = self.xgb_model.validate_setup(features)
+        win_prob = xgb_result['win_prob']
+        verdict = xgb_result['verdict']
+
+        # Conviction tiers based on calibrated model output & sentiment
+        if win_prob >= 0.48 or verdict == "CONCORDANT":
+            conviction = "🟢 HIGH"
+        elif win_prob >= 0.36 or sent_score >= 0.55:
+            conviction = "🟡 MEDIUM"
+        else:
+            conviction = "🔴 LOW"
+
+        log.info(f"[{ticker}] AI Filters: Sentiment={sent_score:.2f}, XGB={verdict} ({win_prob:.2f}), Conviction={conviction}")
+        
+        # Enforce Fakeout Filter: Suppress only low-probability traps or setups fighting sharp opposite news
+        if win_prob < 0.35 or verdict == "HALLUCINATION" or (direction == "Long" and sent_score < 0.30) or (direction == "Short" and sent_score > 0.70):
+            log.warning(f"[{ticker}] Alert suppressed by Fakeout Filter: XGB={verdict} ({win_prob:.2f}), Sentiment={sent_score:.2f}. Conviction: {conviction}")
+            self.risk_manager.remove_position(ticker)
+            return
+            
+        log.info(f"✅ {ticker} {direction} Conviction: {conviction}. Dispatching Alert.")
 
         # 4. Options Pricing Check (Targeting 14-21 DTE for optimal swing leverage and low theta decay)
         expiration = await self.options_pricer.get_target_expiration(ticker, min_dte=14, max_dte=21, session=session)
