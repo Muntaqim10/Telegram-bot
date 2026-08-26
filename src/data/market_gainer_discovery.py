@@ -2,7 +2,7 @@ import os
 import logging
 import asyncio
 import aiohttp
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any
 
 log = logging.getLogger(__name__)
 

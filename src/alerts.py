@@ -10,7 +10,7 @@ from datetime import datetime
 
 import aiohttp
 
-from typing import Any, Optional, Dict
+from typing import Any, Optional
 from src.database import add_trade
 from src.utils.telegram_formatter import format_telegram_alert
 

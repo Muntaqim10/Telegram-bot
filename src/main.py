@@ -12,7 +12,6 @@ root_env = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.env"))
 config_env = os.path.abspath(os.path.join(os.path.dirname(__file__), "../config/.env"))
 load_dotenv(dotenv_path=root_env)
 load_dotenv(dotenv_path=config_env)
-import random
 import pandas as pd
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -40,7 +39,7 @@ from src.ai.xgb_micro_v2 import XGBMicroSentinelV2
 from src.execution.risk_manager import RiskManager
 from src.alerts import AlertGateway
 
-from src.data.dynamic_scanner import DynamicTickerScanner, CANDIDATE_POOL
+from src.data.dynamic_scanner import DynamicTickerScanner
 from src.data.market_gainer_discovery import MarketGainerDiscovery, EXPANDED_UNIVERSE
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")

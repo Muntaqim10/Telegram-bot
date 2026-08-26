@@ -1,6 +1,6 @@
 import os
+import random
 import logging
-import aiohttp
 from typing import List
 
 log = logging.getLogger(__name__)
@@ -76,56 +76,10 @@ class DynamicTickerScanner:
 
     async def get_active_market_movers(self, max_symbols: int = 50) -> List[str]:
         """
-        Queries Tradier bulk quotes to filter for active volume surges and gappers.
+        Samples a randomized batch of 50 tickers from the 119-ticker CANDIDATE_POOL
+        on each scan cycle to ensure continuous rotation across the entire universe.
         """
-        if not self.token:
-            log.warning("No Tradier token found. Falling back to default core symbols.")
-            return CANDIDATE_POOL[:max_symbols]
-
-        symbols_str = ",".join(CANDIDATE_POOL)
-        url = f"https://api.tradier.com/v1/markets/quotes?symbols={symbols_str}&greeks=false"
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=self.headers, timeout=10.0) as resp:
-                    if resp.status != 200:
-                        log.warning(f"Tradier bulk quotes scanner status: {resp.status}")
-                        return CANDIDATE_POOL[:max_symbols]
-
-                    data = await resp.json()
-                    quotes = data.get("quotes", {}).get("quote", [])
-                    if not isinstance(quotes, list):
-                        quotes = [quotes]
-
-                    scored_tickers = []
-                    for q in quotes:
-                        sym = q.get("symbol")
-                        vol = q.get("volume", 0) or 0
-                        avg_vol = q.get("average_volume", 0) or 1
-                        last_price = q.get("last") or q.get("close") or 0.0
-
-                        if not sym or last_price <= 1.0:
-                            continue
-
-                        # Calculate Volume Surge & Dollar Volume score
-                        vol_ratio = vol / avg_vol if avg_vol > 0 else 1.0
-                        dollar_vol = vol * last_price
-
-                        # Always include core major indexes & Mag 7
-                        is_core = sym in ["SPY", "QQQ", "IWM", "GLD", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AMD"]
-                        
-                        score = (vol_ratio * 2.0) + (dollar_vol / 1e8)
-                        if is_core:
-                            score += 1000.0 # Force priority for major leaders
-
-                        scored_tickers.append((score, sym))
-
-                    scored_tickers.sort(key=lambda x: x[0], reverse=True)
-                    top_tickers = [t[1] for t in scored_tickers[:max_symbols]]
-                    
-                    log.info(f"⚡ [DYNAMIC SCANNER] Discovered Top {len(top_tickers)} active volume & momentum leaders from Tradier.")
-                    return top_tickers
-
-        except Exception as e:
-            log.error(f"Error running DynamicTickerScanner: {e}")
-            return CANDIDATE_POOL[:max_symbols]
+        sample_size = min(max_symbols, len(CANDIDATE_POOL))
+        sampled_tickers = random.sample(CANDIDATE_POOL, sample_size)
+        log.info(f"⚡ [DYNAMIC SCANNER] Randomly sampled {len(sampled_tickers)} stocks from the {len(CANDIDATE_POOL)}-ticker universe for live stream rotation.")
+        return sampled_tickers
