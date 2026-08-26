@@ -198,6 +198,14 @@ class SignalPipeline:
             self.risk_manager.remove_position(ticker)
             return
 
+        if tf_matrix.get("data_quality_warning"):
+            quality_note = "⚠️ Timeframe confluence evaluated on incomplete historical data"
+            if final_warning_tag:
+                final_warning_tag += f" | {quality_note}"
+            else:
+                final_warning_tag = quality_note
+            log.warning(f"[{ticker}] Timeframe confluence data quality warning flagged. Appending note to alert.")
+
         opt_type = "put" if direction == "Short" else "call"
 
         next_earnings = await self.earnings_calendar.get_next_earnings_date(ticker, session=session)

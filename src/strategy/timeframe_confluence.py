@@ -108,12 +108,26 @@ class TimeframeConfluenceEngine:
 
         # Pull Daily Historical Bars
         daily_df = await self.fetch_historical_bars(ticker, interval="daily", days=250, session=session)
-        
+        data_quality_warning = False
+
+        if daily_df is None or daily_df.empty or len(daily_df) < 30:
+            log.warning(f"[{ticker}] Timeframe confluence: Insufficient daily bar history ({len(daily_df) if daily_df is not None else 0} bars). Bypassing gate with data quality warning.")
+            return {
+                "cycle_name": cycle_name,
+                "is_3day_cycle": is_3day_cycle,
+                "concordant": True,  # Fail open intentionally so external data outage does not block all alerts
+                "confluence_summary": "INSUFFICIENT_DATA",
+                "data_quality_warning": True,
+                "tf_1": {"name": "Daily (Primary Trend)", "status": True, "desc": "⚠️ Insufficient historical data (<30 bars)"},
+                "tf_2": {"name": "4-Hour / Intraday", "status": True, "desc": "⚠️ Data check bypassed"},
+                "tf_3": {"name": "1-Hour / Intraday", "status": True, "desc": "⚠️ Data check bypassed"},
+            }
+
         # 1. Evaluate Daily Metric
         daily_bullish = True
         daily_desc = "Neutral / Breakout Pending"
         
-        if not daily_df.empty and len(daily_df) >= 20:
+        if len(daily_df) >= 20:
             ema20 = daily_df["close"].ewm(span=20, adjust=False).mean().iloc[-1]
             high_20d = daily_df["high"].iloc[-21:-1].max() if len(daily_df) >= 21 else daily_df["high"].max()
             low_20d = daily_df["low"].iloc[-21:-1].min() if len(daily_df) >= 21 else daily_df["low"].min()
@@ -124,12 +138,15 @@ class TimeframeConfluenceEngine:
             else:
                 daily_bullish = (spot_price <= ema20) or (spot_price <= low_20d * 1.02)
                 daily_desc = f"Below 20 EMA (${ema20:.2f})" if spot_price <= ema20 else f"Near 20D Low (${low_20d:.2f})"
+        else:
+            data_quality_warning = True
+            daily_desc = "⚠️ Daily EMA history limited"
 
         # 2. Evaluate Weekly Metric (for Weekly Cycle)
         weekly_bullish = True
         weekly_desc = "Multi-Week Macro Aligned"
         
-        if not daily_df.empty and len(daily_df) >= 50:
+        if len(daily_df) >= 50:
             weekly_df = daily_df.resample('W-FRI').agg({
                 'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
             }).dropna()
@@ -142,6 +159,12 @@ class TimeframeConfluenceEngine:
                 else:
                     weekly_bullish = spot_price <= w_ema10
                     weekly_desc = f"Macro Bearish < 10W EMA (${w_ema10:.2f})"
+            else:
+                data_quality_warning = True
+                weekly_desc = "⚠️ Weekly history limited (<10 weeks)"
+        else:
+            data_quality_warning = True
+            weekly_desc = "⚠️ Insufficient bars for weekly resample (<50 days)"
 
         # 3. Evaluate 4-Hour Tactical Metric
         # Approximate 4H structure from recent daily and intraday state
@@ -212,6 +235,7 @@ class TimeframeConfluenceEngine:
             "is_3day_cycle": is_3day_cycle,
             "concordant": all_concordant,
             "confluence_summary": confluence_str,
+            "data_quality_warning": data_quality_warning,
             "tf_1": {"name": tf_1_name, "status": tf_1_status, "desc": tf_1_desc},
             "tf_2": {"name": tf_2_name, "status": tf_2_status, "desc": tf_2_desc},
             "tf_3": {"name": tf_3_name, "status": tf_3_status, "desc": tf_3_desc},
