@@ -43,7 +43,7 @@ class BlindSentimentAnalyzer:
         DeepSeek reasoning synthesis that cross-examines:
         1. Live Breaking News & SEC Filings
         2. Empirical Backtest Statistics (Win rate, Avg ROI)
-        3. Black-Scholes Mathematical Context (0.75 Delta strike, Expected move %, Breakeven)
+        3. Black-Scholes Mathematical Context (0.75 Delta strike, Expected move %, Breakeven, Theta, IV rank, GEX confidence, and Multi-Timeframe Confluence)
         """
         now = datetime.now()
         cache_key = f"{ticker}_{direction}"
@@ -80,6 +80,12 @@ class BlindSentimentAnalyzer:
         opt_type = math_context.get("option_type", "CALL")
         opt_ask = math_context.get("option_ask", 0.0)
         delta = math_context.get("delta", 0.75)
+        theta = math_context.get("theta", 0.0)
+        iv_rank = math_context.get("iv_rank")
+        gex_conf = math_context.get("gex_confidence", "STANDARD")
+        tf_confluence = math_context.get("timeframe_confluence", "N/A")
+        
+        iv_rank_str = f"{iv_rank:.0f}/100" if iv_rank is not None else "Insufficient history"
 
         prompt = (
             f"You are a Senior Quantitative Equity & Derivatives Portfolio Manager.\n"
@@ -88,7 +94,10 @@ class BlindSentimentAnalyzer:
             f"   • Proposed Action: {direction.upper()} ({opt_type})\n"
             f"   • Asset Tier: {bt_tier}\n"
             f"   • Mathematical Expected Move: +{exp_move:.1f}%\n"
-            f"   • 0.75 Delta ITM Contract: ${strike} {opt_type} @ ${opt_ask:.2f} (Delta: {delta:.2f})\n\n"
+            f"   • 0.75 Delta ITM Contract: ${strike} {opt_type} @ ${opt_ask:.2f} (Delta: {delta:.2f}, Theta: {theta:.4f}/day)\n"
+            f"   • IV Rank (vs this ticker's own history): {iv_rank_str}\n"
+            f"   • Dealer Positioning Confidence (GEX): {gex_conf}\n"
+            f"   • Multi-Timeframe Confluence Already Confirmed: {tf_confluence}\n\n"
             f"2. HISTORICAL BACKTEST PERFORMANCE{age_note}:\n"
             f"   • Sample Size: {bt_trades} trades\n"
             f"   • Historical Win Rate: {bt_wr}%\n"

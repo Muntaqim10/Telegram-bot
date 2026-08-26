@@ -291,7 +291,12 @@ class SignalPipeline:
             "target_strike": actual_strike,
             "option_type": opt_type.upper(),
             "option_ask": pricing_data.get("ask", 0.0),
-            "delta": pricing_data.get("delta", 0.75)
+            "delta": pricing_data.get("delta", 0.75),
+            "theta": pricing_data.get("theta", 0.0),
+            "iv_rank": pricing_data.get("iv_rank"),
+            "gex_confidence": pricing_data.get("gex_confidence", "STANDARD"),
+            "timeframe_confluence": tf_matrix.get("confluence_summary", "N/A"),
+            # Note: is_early_surge is computed downstream in section 5
         }
         
         synth_result = await self.sentiment_analyzer.synthesize_catalyst_and_edge(
