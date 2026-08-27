@@ -282,10 +282,23 @@ class ORBStrategy:
             is_overextended_upside = vwap_ratio > 1.025
             is_overextended_downside = vwap_ratio < 0.975
 
+            # Time Window Enforcement:
+            # Morning ORB window (9:45 - 11:30 AM EST): Fresh institutional morning breakouts
+            # Afternoon CRB window (3:30 - 4:00 PM EST): Closing range breakouts anticipating overnight continuation
+            is_morning_orb_window = (
+                (timestamp.hour == 9 and timestamp.minute >= (30 + self.orb_minutes)) or
+                (timestamp.hour == 10) or
+                (timestamp.hour == 11 and timestamp.minute <= 30)
+            )
+            is_afternoon_crb_window = (
+                (timestamp.hour == 15 and timestamp.minute >= 30) or
+                (timestamp.hour == 16 and timestamp.minute <= 5)
+            )
+
             # 1. Call Setups: Dual ORB + CRB Breakouts & Breakdown Fakeout Reversals
             if not is_overextended_upside and has_volume_surge:
-                # Highest Conviction: Dual ORB + CRB Breakout (Price > ORB High AND Price > CRB High)
-                if price > orb["high"] and price >= state.get("crb_high", price) and price >= state["vwap"] and ema_trend_5m_bullish == 1:
+                # Highest Conviction Morning Breakout: Dual ORB + CRB Breakout (Price > ORB High AND Price > CRB High)
+                if is_morning_orb_window and price > orb["high"] and price >= state.get("crb_high", price) and price >= state["vwap"] and ema_trend_5m_bullish == 1:
                     level = max(orb["high"], state.get("crb_high", price))
                     return self._trigger_or_queue_breakout(
                         ticker, state, level, "Long", "🔥 DUAL ORB+CRB CALL BREAKOUT", 
@@ -293,18 +306,21 @@ class ORBStrategy:
                     )
 
                 # Reversal Entry: Failed Breakdown Reclaim (Price was below ORB Low, now reclaims VWAP & 5m 9-EMA)
+                # Active throughout trading session (9:45 - 15:30)
                 if price <= orb["low"] * 1.005 and price >= state["vwap"] and ema_trend_5m_bullish == 1 and ema_trend_1m_bullish == 1:
                     self.active_signals[ticker] = {"direction": "Long", "time": timestamp}
                     signal_data.update({"direction": "Long", "catalyst_type": "🔄 FAKEOUT BREAKDOWN CALL REVERSAL", "tf_confluence": "Reversal+5m+VWAP"})
                     return signal_data
 
-                if price > orb["high"] and price >= state["vwap"] and ema_trend_5m_bullish == 1:
+                # Morning ORB Only (9:45 - 11:30 AM EST)
+                if is_morning_orb_window and price > orb["high"] and price >= state["vwap"] and ema_trend_5m_bullish == 1:
                     return self._trigger_or_queue_breakout(
                         ticker, state, orb["high"], "Long", "Opening Range Call Breakout (ORB)",
                         "1m+5m+ORB+Daily", signal_data, price, timestamp, f"above ORB high (${orb['high']:.2f})"
                     )
 
-                if price >= state.get("crb_high", price) and price >= state["vwap"] and ema_trend_5m_bullish == 1:
+                # Afternoon CRB Only (3:30 - 4:00 PM EST)
+                if is_afternoon_crb_window and price >= state.get("crb_high", price) and price >= state["vwap"] and ema_trend_5m_bullish == 1:
                     crb_h = state.get("crb_high", price)
                     return self._trigger_or_queue_breakout(
                         ticker, state, crb_h, "Long", "Closing Range Call Breakout (CRB)",
@@ -313,8 +329,8 @@ class ORBStrategy:
 
             # 2. Put Setups: Dual ORB + CRB Breakdowns & Breakout Fakeout Reversals
             if not is_overextended_downside and has_volume_surge:
-                # Highest Conviction: Dual ORB + CRB Breakdown (Price < ORB Low AND Price < CRB Low)
-                if price < orb["low"] and price <= state.get("crb_low", price) and price <= state["vwap"] and ema_trend_5m_bullish == 0:
+                # Highest Conviction Morning Breakdown: Dual ORB + CRB Breakdown (Price < ORB Low AND Price < CRB Low)
+                if is_morning_orb_window and price < orb["low"] and price <= state.get("crb_low", price) and price <= state["vwap"] and ema_trend_5m_bullish == 0:
                     level = min(orb["low"], state.get("crb_low", price))
                     return self._trigger_or_queue_breakout(
                         ticker, state, level, "Short", "🔥 DUAL ORB+CRB PUT BREAKDOWN",
@@ -322,18 +338,21 @@ class ORBStrategy:
                     )
 
                 # Reversal Entry: Failed Breakout Reversal (Price pushed above ORB High, lost VWAP & 5m 9-EMA)
+                # Active throughout trading session (9:45 - 15:30)
                 if price >= orb["high"] * 0.995 and price <= state["vwap"] and ema_trend_5m_bullish == 0 and ema_trend_1m_bullish == 0:
                     self.active_signals[ticker] = {"direction": "Short", "time": timestamp}
                     signal_data.update({"direction": "Short", "catalyst_type": "🔄 FAKEOUT BREAKOUT PUT REVERSAL", "tf_confluence": "Reversal+5m+VWAP"})
                     return signal_data
 
-                if price < orb["low"] and price <= state["vwap"] and ema_trend_5m_bullish == 0:
+                # Morning ORB Only (9:45 - 11:30 AM EST)
+                if is_morning_orb_window and price < orb["low"] and price <= state["vwap"] and ema_trend_5m_bullish == 0:
                     return self._trigger_or_queue_breakout(
                         ticker, state, orb["low"], "Short", "Opening Range Put Breakdown (ORB)",
                         "1m+5m+ORB+Daily", signal_data, price, timestamp, f"below ORB low (${orb['low']:.2f})"
                     )
 
-                if price <= state.get("crb_low", price) and price <= state["vwap"] and ema_trend_5m_bullish == 0:
+                # Afternoon CRB Only (3:30 - 4:00 PM EST)
+                if is_afternoon_crb_window and price <= state.get("crb_low", price) and price <= state["vwap"] and ema_trend_5m_bullish == 0:
                     crb_l = state.get("crb_low", price)
                     return self._trigger_or_queue_breakout(
                         ticker, state, crb_l, "Short", "Closing Range Put Breakdown (CRB)",

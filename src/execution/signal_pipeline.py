@@ -35,16 +35,16 @@ class SignalPipeline:
         else:
             log.info(f"🔴 {ticker} Short breakdown setup evaluated with risk management.")
 
-        # 1.5 VWAP Overextension Check (soft-fail: tag, don't suppress)
+        # 1.5 VWAP Overextension Check: Hard block chasing top for calls or bottom for puts
         vwap_ratio = signal.get("vwap_ratio", 1.0)
         warnings = []
         
         if direction == "Long" and vwap_ratio > 1.025:
-            warnings.append(f"Extended (+{(vwap_ratio - 1)*100:.1f}% > VWAP)")
-            log.info(f"⚠️ {ticker} Call: Price overextended ({vwap_ratio:.4f}). Tagging alert, not blocking.")
+            log.warning(f"[{ticker}] Call alert BLOCKED by Exhaustion Gate: Price (+{(vwap_ratio - 1)*100:.1f}% > VWAP) is extended into top tick.")
+            return
         elif direction == "Short" and vwap_ratio < 0.975:
-            warnings.append(f"Extended ({(vwap_ratio - 1)*100:.1f}% < VWAP)")
-            log.info(f"⚠️ {ticker} Put: Price overextended ({vwap_ratio:.4f}). Tagging alert, not blocking.")
+            log.warning(f"[{ticker}] Put alert BLOCKED by Exhaustion Gate: Price ({(vwap_ratio - 1)*100:.1f}% < VWAP) is extended into bottom tick.")
+            return
 
         # 2. AI Sentiment Check (Blind)
         headlines = await self.news_fetcher.get_headlines(ticker, session=session)
@@ -105,13 +105,41 @@ class SignalPipeline:
                     catalyst_type=cat_type
                 )
 
-        # 3.5 Tiered Velocity & Expected Move Magnitude Gate
-        from src.data.dynamic_scanner import get_asset_tier_info
-        tier_info = get_asset_tier_info(ticker)
+        # 3.4 Daily ATR Exhaustion Check:
+        # Prevents buying at the daily top for Calls, or selling at the daily bottom for Puts
         entry_p = float(signal["entry_price"])
+        hod = float(signal.get("hod", entry_p))
+        lod = float(signal.get("lod", entry_p))
+        atr_ref = cached_atr if (cached_atr and not pd.isna(cached_atr)) else (entry_p * 0.035)
+        
+        if atr_ref > 0:
+            if direction == "Long":
+                run_from_lod = entry_p - lod
+                atr_consumed = run_from_lod / atr_ref
+                if atr_consumed > 0.75:
+                    log.warning(
+                        f"[{ticker}] Long alert BLOCKED by Exhaustion Gate: "
+                        f"Already consumed {atr_consumed*100:.1f}% of daily ATR (${atr_ref:.2f}) from session low (${lod:.2f}). "
+                        f"Suppressed to avoid buying at the top."
+                    )
+                    self.risk_manager.remove_position(ticker)
+                    return
+            elif direction == "Short":
+                drop_from_hod = hod - entry_p
+                atr_consumed = drop_from_hod / atr_ref
+                if atr_consumed > 0.75:
+                    log.warning(
+                        f"[{ticker}] Short alert BLOCKED by Exhaustion Gate: "
+                        f"Already consumed {atr_consumed*100:.1f}% of daily ATR (${atr_ref:.2f}) from session high (${hod:.2f}). "
+                        f"Suppressed to avoid shorting at the bottom."
+                    )
+                    self.risk_manager.remove_position(ticker)
+                    return
         tp_p = float(risk_levels["take_profit"])
         expected_move_pct = (abs(tp_p - entry_p) / entry_p) * 100.0 if entry_p > 0 else 0.0
         
+        from src.data.dynamic_scanner import get_asset_tier_info
+        tier_info = get_asset_tier_info(ticker)
         min_required_move = tier_info["min_move_pct"]
         z_vol_val = signal.get("z_vol", 0.0)
         if isinstance(z_vol_val, str):

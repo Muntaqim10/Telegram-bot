@@ -90,7 +90,8 @@ def prepare_ml_training_data(csv_path: Optional[str] = None, output_parquet: str
         "hist_vol_20": 0.35,
         "sma20_ratio": 1.02,
         "sma_spread": 0.03,
-        "breakout_pct": 0.015
+        "breakout_pct": 0.015,
+        "initial_delta": 0.75
     }
 
     for feat, default_val in feature_defaults.items():
