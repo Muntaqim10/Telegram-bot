@@ -137,9 +137,12 @@ class MarketGainerDiscovery:
                         score += 500.0
                     scored_pool[sym] = max(scored_pool.get(sym, 0.0), score)
 
-                # 2. Score Yahoo Finance Market-Wide Gainers/Movers
+                # 2. Score Yahoo Finance Market-Wide Gainers/Movers (Filtered strictly to backtested universe)
+                candidate_set = set(EXPANDED_UNIVERSE)
                 for ym in yahoo_movers:
                     sym = ym["symbol"]
+                    if sym not in candidate_set:
+                        continue
                     pct_change = abs(ym.get("pct_change", 0.0))
                     vol = ym.get("volume", 0)
                     dollar_vol = vol * ym.get("price", 10.0)

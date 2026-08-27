@@ -29,6 +29,12 @@ class SignalPipeline:
         ticker = signal["ticker"]
         direction = signal["direction"]
 
+        # 0. Verified Backtested Universe Gate: Strictly enforce CANDIDATE_POOL
+        from src.data.dynamic_scanner import CANDIDATE_POOL
+        if ticker not in CANDIDATE_POOL:
+            log.warning(f"[{ticker}] Alert BLOCKED: Ticker is not in the verified 255-ticker backtested pool.")
+            return
+
         # 1. Market Bias Tracking
         if direction == "Long":
             log.info(f"🟢 CALL BIAS ACTIVE: {ticker} Long breakout setup evaluated without SPY block.")
