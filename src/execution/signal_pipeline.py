@@ -334,14 +334,9 @@ class SignalPipeline:
         else:
             hist_edge_str = "Initial Live Tracking (Broad Watchlist Dynamic Scan)"
 
-        # Check if setup qualifies for High-Leverage OTM Runner (Rare occasions: DeepSeek + Math + Backtest)
-        raw_otm = pricing_data.get("otm_runner")
+        # 14-21 DTE Institutional Focus: Pure intrinsic ~0.75 Delta options (disable OTM lottery dilution)
+        raw_otm = None
         otm_qualified = False
-        if raw_otm and synth_result.get("otm_qualified", False):
-            min_exp = 8.0 if tier_info.get("tier") == "MEGA-CAP" else 20.0
-            if xgb_result['win_prob'] >= 0.75 and expected_move_pct >= min_exp:
-                otm_qualified = True
-                log.info(f"🚀 [{ticker}] Setup QUALIFIED for RARE High-Leverage OTM Runner (${raw_otm.get('strike')} {opt_type.upper()}).")
 
         # Check for Early Morning Surge High Alert (>=3% Mega-Cap or >=10% Mid-Cap before 10:30 AM EST)
         is_early_surge = signal.get("is_early_surge", False)

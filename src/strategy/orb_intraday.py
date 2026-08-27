@@ -311,11 +311,6 @@ class ORBStrategy:
                         "1m+5m+CRB+Daily", signal_data, price, timestamp, f"above CRB high (${crb_h:.2f})"
                     )
 
-                if vwap_ratio >= 1.002 and ema9_ratio >= 1.001 and ema_trend_1m_bullish == 1 and ema_trend_5m_bullish == 1:
-                    self.active_signals[ticker] = {"direction": "Long", "time": timestamp}
-                    signal_data.update({"direction": "Long", "catalyst_type": "Bullish 5m+1m Trend Continuation"})
-                    return signal_data
-
             # 2. Put Setups: Dual ORB + CRB Breakdowns & Breakout Fakeout Reversals
             if not is_overextended_downside and has_volume_surge:
                 # Highest Conviction: Dual ORB + CRB Breakdown (Price < ORB Low AND Price < CRB Low)
@@ -344,11 +339,6 @@ class ORBStrategy:
                         ticker, state, crb_l, "Short", "Closing Range Put Breakdown (CRB)",
                         "1m+5m+CRB+Daily", signal_data, price, timestamp, f"below CRB low (${crb_l:.2f})"
                     )
-
-                if vwap_ratio <= 0.998 and ema9_ratio <= 0.999 and ema_trend_1m_bullish == 0 and ema_trend_5m_bullish == 0:
-                    self.active_signals[ticker] = {"direction": "Short", "time": timestamp}
-                    signal_data.update({"direction": "Short", "catalyst_type": "Bearish 5m+1m Trend Breakdown"})
-                    return signal_data
                 
         return None
         

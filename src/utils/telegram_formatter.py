@@ -14,20 +14,17 @@ def format_telegram_alert(signal: TradeSignal) -> str:
         "Opening Range Call Breakout (ORB)":  "🟢 <b>OPENING RANGE INTRADAY BREAKOUT (ORB CALLS)</b>",
         "Opening Range Put Breakdown (ORB)": "🔴 <b>OPENING RANGE INTRADAY BREAKDOWN (ORB PUTS)</b>",
         "15m ORB Breakout + 5m Trend":        "🟢 <b>INTRADAY CALL BREAKOUT (15m ORB + 5m TREND)</b>",
-        "Bullish 5m+1m Trend Continuation":   "🟢 <b>BULLISH TREND CONTINUATION (CALLS)</b>",
         "15m ORB Breakdown + 5m Trend":       "🔴 <b>INTRADAY PUT BREAKDOWN (15m ORB + 5m TREND)</b>",
-        "Bearish 5m+1m Trend Breakdown":      "🔴 <b>BEARISH TREND BREAKDOWN (PUTS)</b>",
-        "Volume Breakout":                    "💥 <b>VOLUME BREAKOUT</b>",
-        "Trend Breakout":                     "📈 <b>TREND BREAKOUT</b>",
-        "Volume Breakdown":                   "📉 <b>VOLUME BREAKDOWN</b>",
-        "Trend Breakdown":                    "📉 <b>TREND BREAKDOWN</b>",
+        "Volume Breakout":                    "💥 <b>VOLUME BREAKOUT (14-21 DTE CALLS)</b>",
+        "Trend Breakout":                     "📈 <b>TREND BREAKOUT (14-21 DTE CALLS)</b>",
+        "Volume Breakdown":                   "📉 <b>VOLUME BREAKDOWN (14-21 DTE PUTS)</b>",
+        "Trend Breakdown":                    "📉 <b>TREND BREAKDOWN (14-21 DTE PUTS)</b>",
         "Intraday Volume Breakout":           "🔺 <b>INTRADAY VOLUME BREAKOUT</b>",
         "Intraday Trend Breakout":            "🔺 <b>INTRADAY TREND BREAKOUT</b>",
         "Intraday Volume Breakdown":          "🔻 <b>INTRADAY VOLUME BREAKDOWN</b>",
         "Intraday Trend Breakdown":           "🔻 <b>INTRADAY TREND BREAKDOWN</b>",
         "Pullback Retest":                    "🟢 <b>PULLBACK RETEST (SUPPORT HOLD)</b>",
-        "Pullback Retest Short":              "🔴 <b>BEARISH PULLBACK RETEST</b>",
-        "Daily Mean Reversion":               "🔄 <b>DAILY MEAN REVERSION (BOUNCE)</b>"
+        "Pullback Retest Short":              "🔴 <b>BEARISH PULLBACK RETEST</b>"
     }
     
     strategy_header = header_map.get(signal.strategy_type)

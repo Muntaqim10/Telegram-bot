@@ -96,9 +96,14 @@ class AlertGateway:
 
     async def dispatch_extended_hours(self, alert: dict) -> bool:
         """
-        Dispatches an informational extended hours alert.
-        Does not interact with SQLite or log a formal trade.
+        Extended hours mover handler.
+        Options exchanges are closed outside 9:30 AM - 4:00 PM EST.
+        Silenced by default to eliminate after-hours alert fatigue unless ENABLE_EXTENDED_HOURS_ALERTS is true.
         """
+        if os.getenv("ENABLE_EXTENDED_HOURS_ALERTS", "false").lower() != "true":
+            log.debug("Extended hours alert suppressed (options chain closed outside regular session).")
+            return False
+
         ticker = alert["ticker"]
         direction = alert["direction"]
         pct_change = alert["pct_change"]
