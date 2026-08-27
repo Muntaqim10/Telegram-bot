@@ -11,25 +11,29 @@ def main():
     training_data_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/ml_training_data_v2.parquet"))
     df = pd.read_parquet(training_data_path)
     
-    features = [
-        "entry_time_minute", "relative_volume", "vwap_ratio", 
-        "ema9_ratio", "ema_trend", "ema_trend_5m", 
-        "spy_correlation", "hod_ratio", "lod_ratio"
-    ]
+    from src.ai.xgb_micro_v2 import MODEL_FEATURES, get_train_val_split
+    features = list(MODEL_FEATURES)
     
+    if "relative_volume" not in df.columns and "z_vol" in df.columns:
+        df["relative_volume"] = df["z_vol"]
+    if "initial_delta" not in df.columns:
+        df["initial_delta"] = 0.75
+
     for col in features:
         if col not in df.columns:
             df[col] = 0.0
 
     df = df.dropna(subset=features + ["target"])
-    
-    from src.ai.xgb_micro_v2 import get_train_val_split
     _, _, X_val, y_val = get_train_val_split(df, features, "target")
         
     # 2. Load the candidate model
-    model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/models/xgb_micro_v2_candidate.json"))
+    cand_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/models/xgb_micro_v2_candidate.json"))
+    prim_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/models/xgb_micro_v2.json"))
+    model_path = cand_path if os.path.exists(cand_path) else prim_path
     model = xgb.Booster()
     model.load_model(model_path)
+    print(f"Loaded model from: {model_path}")
+    print(f"Features evaluated: {features}")
     
     # 3. Generate predictions
     dval = xgb.DMatrix(X_val)
@@ -69,27 +73,28 @@ def main():
     print("-" * 60)
     print(f"Overall Brier Score (MSE): {brier_score:.4f}\n")
     
-    # 7. Tier breakdown
+    # 7. Tier breakdown (showing calibrated bot tiers)
     def get_tier(p):
-        if p >= 0.75: return "HIGH (>=0.75)"
-        if p >= 0.55: return "MEDIUM (0.55-0.75)"
-        return "LOW (<0.55)"
+        if p >= 0.48: return "HIGH (>=0.48)"
+        if p >= 0.36: return "MEDIUM (0.36-0.48)"
+        return "LOW (<0.36)"
         
     val_df["tier"] = val_df["pred"].apply(get_tier)
     
     print("="*60)
-    print("THREE-TIER ALERTS BREAKDOWN")
+    print("CALIBRATED THREE-TIER ALERTS BREAKDOWN")
     print("="*60)
     
-    tiers = ["HIGH (>=0.75)", "MEDIUM (0.55-0.75)", "LOW (<0.55)"]
+    tiers = ["HIGH (>=0.48)", "MEDIUM (0.36-0.48)", "LOW (<0.36)"]
     for t in tiers:
         t_df = val_df[val_df["tier"] == t]
         count = len(t_df)
         if count == 0:
-            print(f"{t:<20} | Count: {count:<4} | Realized Win Rate: N/A")
+            print(f"{t:<22} | Count: {count:<4} | Realized Win Rate: N/A")
         else:
             actual_wr = t_df["actual"].mean()
-            print(f"{t:<20} | Count: {count:<4} | Realized Win Rate: {actual_wr:.3f}")
+            mean_p = t_df["pred"].mean()
+            print(f"{t:<22} | Count: {count:<4} | Mean Pred: {mean_p:.3f} | Realized Win Rate: {actual_wr:.3f}")
             
     print("="*60 + "\n")
 

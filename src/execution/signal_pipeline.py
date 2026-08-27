@@ -136,7 +136,8 @@ class SignalPipeline:
             "sma20_ratio": float(signal.get("sma20_ratio", vwap_ratio)),
             "sma_spread": float(signal.get("sma_spread", 0.02)),
             "breakout_pct": float(signal.get("breakout_pct", 0.01)),
-            "direction_code": 1 if direction == "Long" else 0
+            "direction_code": 1 if direction == "Long" else 0,
+            "initial_delta": float(signal.get("initial_delta", 0.75))
         }
         xgb_result = self.xgb_model.validate_setup(features)
         win_prob = xgb_result['win_prob']

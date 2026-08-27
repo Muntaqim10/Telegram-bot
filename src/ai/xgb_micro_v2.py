@@ -1,4 +1,5 @@
 import os
+import json
 import pandas as pd
 import numpy as np
 import logging
@@ -33,48 +34,64 @@ def get_train_val_split(df: pd.DataFrame, features: list[str], target_col: str =
         
     return X_train, y_train, X_val, y_val
 
+MODEL_FEATURES = [
+    "relative_volume", "rsi_14", "chop_14", "expected_move_pct",
+    "hist_vol_20", "sma20_ratio", "sma_spread", "breakout_pct",
+    "direction_code", "initial_delta"
+]
+
 class XGBMicroSentinelV2:
     """
     XGBoost model tailored for identifying all-day trend potential (>5% intraday moves).
     This model evaluates intraday features (volume spikes, early ORB velocity).
     V2 Model runs on path-dependent labels.
     """
-    def __init__(self):
-        self.model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/models/xgb_micro_v2.json"))
+    def __init__(self, model_path: str = None):
+        self.model_path = model_path or os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "../../data/models/xgb_micro_v2.json")
+        )
+        self.candidate_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "../../data/models/xgb_micro_v2_candidate.json")
+        )
+        self.model = None
+        self._is_trained = False
         self._last_mtime = None
+        
         try:
             import xgboost as xgb
             self.xgb = xgb
-            self.model = None
-            self._is_trained = False
-            self._load_model()
         except ImportError:
+            log.warning("xgboost not installed. XGBMicroSentinelV2 disabled.")
             self.xgb = None
-            self.model = None
-            log.error("XGBoost library is not installed.")
             
+        self._load_model()
+
     @property
     def is_active(self) -> bool:
         return self._is_trained
 
     def _load_model(self):
-        if self.xgb and os.path.exists(self.model_path):
+        if not self.xgb: return
+        if os.path.exists(self.model_path):
             try:
                 self.model = self.xgb.Booster()
                 self.model.load_model(self.model_path)
-                self._last_mtime = os.path.getmtime(self.model_path)
                 self._is_trained = True
+                self._last_mtime = os.path.getmtime(self.model_path)
                 log.info(f"Loaded trained XGBMicroSentinelV2 (mtime: {self._last_mtime}) from {self.model_path}")
             except Exception as e:
-                log.warning(f"Failed to load V2 XGB model: {e}")
+                log.error(f"Failed to load XGBoost model from {self.model_path}: {e}")
+                self._is_trained = False
+        else:
+            log.warning(f"No trained model found at {self.model_path}")
 
     def train(self, training_data_path: str):
-        """Trains the model on the backtested labeled dataset."""
-        if not self.xgb: return
+        """Trains the model on the backtested labeled dataset using non-circular features."""
+        if not self.xgb: return 0.0
         
         if not os.path.exists(training_data_path):
             log.error(f"Training data not found at {training_data_path}")
-            return
+            return 0.0
             
         try:
             log.info(f"Training XGBMicroSentinelV2 on {training_data_path}...")
@@ -82,13 +99,16 @@ class XGBMicroSentinelV2:
             
             if len(df) < 10:
                 log.warning("Not enough samples in training data to train effectively.")
-                return
+                return 0.0
                 
-            features = [
-                "relative_volume", "rsi_14", "chop_14", "expected_move_pct",
-                "hist_vol_20", "sma20_ratio", "sma_spread", "breakout_pct", "direction_code"
-            ]
+            features = list(MODEL_FEATURES)
             
+            # Ensure relative_volume is populated from z_vol if relative_volume is missing
+            if "relative_volume" not in df.columns and "z_vol" in df.columns:
+                df["relative_volume"] = df["z_vol"]
+            if "initial_delta" not in df.columns:
+                df["initial_delta"] = 0.75
+                
             # Ensure all features exist
             for col in features:
                 if col not in df.columns:
@@ -121,12 +141,18 @@ class XGBMicroSentinelV2:
             
             os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
             self.model.save_model(self.model_path)
+            self.model.save_model(self.candidate_path)
+            
+            # Save feature columns definition
+            feat_cols_path = os.path.join(os.path.dirname(self.model_path), "feature_columns.json")
+            with open(feat_cols_path, "w", encoding="utf-8") as f:
+                json.dump(features, f, indent=2)
             
             val_preds = self.model.predict(dval)
             val_labels = (val_preds > 0.5).astype(int)
-            val_accuracy = np.mean(val_labels == y_val) if len(y_val) > 0 else 1.0
+            val_accuracy = float(np.mean(val_labels == y_val)) if len(y_val) > 0 else 1.0
             
-            log.info(f"XGBMicroSentinelV2 trained successfully on 14-21 DTE features! Validation Accuracy: {val_accuracy*100:.1f}%. Saved to {self.model_path}")
+            log.info(f"XGBMicroSentinelV2 trained successfully! Validation Accuracy: {val_accuracy*100:.1f}%. Saved to {self.model_path} and {self.candidate_path}")
             
             return val_accuracy
         except Exception as e:
@@ -153,7 +179,8 @@ class XGBMicroSentinelV2:
                 "sma20_ratio": float(features.get("sma20_ratio", features.get("vwap_ratio", 1.0))),
                 "sma_spread": float(features.get("sma_spread", 0.02)),
                 "breakout_pct": float(features.get("breakout_pct", 0.01)),
-                "direction_code": int(features.get("direction_code", 1))
+                "direction_code": int(features.get("direction_code", 1)),
+                "initial_delta": float(features.get("initial_delta", 0.75))
             }])
             if hasattr(self.model, "feature_names") and self.model.feature_names:
                 cols = [c for c in self.model.feature_names if c in X_live.columns]
