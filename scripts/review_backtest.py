@@ -211,7 +211,7 @@ CRITICAL INSTRUCTIONS:
 
     try:
         resp = await client.chat.completions.create(
-            model="deepseek/deepseek-chat",
+            model="deepseek/deepseek-v3.2",
             messages=[
                 {
                     "role": "system",
