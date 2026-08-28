@@ -75,9 +75,9 @@ def main():
     
     # 7. Tier breakdown (showing calibrated bot tiers)
     def get_tier(p):
-        if p >= 0.48: return "HIGH (>=0.48)"
-        if p >= 0.36: return "MEDIUM (0.36-0.48)"
-        return "LOW (<0.36)"
+        if p >= 0.375: return "HIGH (>=0.375)"
+        if p >= 0.360: return "MEDIUM (0.360-0.375)"
+        return "LOW (<0.360)"
         
     val_df["tier"] = val_df["pred"].apply(get_tier)
     
@@ -85,7 +85,7 @@ def main():
     print("CALIBRATED THREE-TIER ALERTS BREAKDOWN")
     print("="*60)
     
-    tiers = ["HIGH (>=0.48)", "MEDIUM (0.36-0.48)", "LOW (<0.36)"]
+    tiers = ["HIGH (>=0.375)", "MEDIUM (0.360-0.375)", "LOW (<0.360)"]
     for t in tiers:
         t_df = val_df[val_df["tier"] == t]
         count = len(t_df)

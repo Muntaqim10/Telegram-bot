@@ -162,33 +162,27 @@ class SignalPipeline:
 
         # 3.6 XGBoost Sentinel Check → Conviction Tier
         features = {
-            "relative_volume": float(signal.get("relative_volume") or signal.get("z_vol") or 1.5),
-            "rsi_14": float(signal.get("rsi_14", 55.0)),
-            "chop_14": float(signal.get("chop_14", 45.0)),
-            "expected_move_pct": round(float(expected_move_pct), 2),
-            "hist_vol_20": float(signal.get("hist_vol_20", 0.35)),
-            "sma20_ratio": float(signal.get("sma20_ratio", vwap_ratio)),
             "sma_spread": float(signal.get("sma_spread", 0.02)),
-            "breakout_pct": float(signal.get("breakout_pct", 0.01)),
-            "direction_code": 1 if direction == "Long" else 0,
-            "initial_delta": float(signal.get("initial_delta", 0.75))
+            "sma20_ratio": float(signal.get("sma20_ratio", vwap_ratio)),
+            "rsi_14": float(signal.get("rsi_14", 55.0)),
+            "direction_code": 1 if direction == "Long" else 0
         }
         xgb_result = self.xgb_model.validate_setup(features)
         win_prob = xgb_result['win_prob']
         verdict = xgb_result['verdict']
 
         # Conviction tiers based on calibrated model output & sentiment
-        if win_prob >= 0.48 or verdict == "CONCORDANT":
+        if win_prob >= 0.375 or verdict == "CONCORDANT":
             conviction = "🟢 HIGH"
-        elif win_prob >= 0.36 or sent_score >= 0.55:
+        elif win_prob >= 0.360 or sent_score >= 0.55:
             conviction = "🟡 MEDIUM"
         else:
             conviction = "🔴 LOW"
 
         log.info(f"[{ticker}] AI Filters: Sentiment={sent_score:.2f}, XGB={verdict} ({win_prob:.2f}), Conviction={conviction}")
         
-        # Enforce Fakeout Filter: Suppress only low-probability traps or setups fighting sharp opposite news
-        if win_prob < 0.35 or verdict == "HALLUCINATION" or (direction == "Long" and sent_score < 0.30) or (direction == "Short" and sent_score > 0.70):
+        # Enforce Fakeout Filter: Suppress low-probability traps (<36.0% win prob) or setups fighting sharp opposite news
+        if win_prob < 0.360 or verdict == "HALLUCINATION" or (direction == "Long" and sent_score < 0.30) or (direction == "Short" and sent_score > 0.70):
             log.warning(f"[{ticker}] Alert suppressed by Fakeout Filter: XGB={verdict} ({win_prob:.2f}), Sentiment={sent_score:.2f}. Conviction: {conviction}")
             self.risk_manager.remove_position(ticker)
             return
