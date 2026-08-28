@@ -17,22 +17,20 @@ log = logging.getLogger("historical_downloader")
 TIINGO_TOKEN = os.getenv("TIINGO_TOKEN")
 
 # Major Indexes & Mag 7 Stocks
+# Major Indexes & Mag 7 Stocks (Tiingo free tier rate-limit safe: 11 core benchmark tickers)
 MAG7_AND_INDEXES = [
     "SPY", "QQQ", "IWM", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AMD"
 ]
-
-# Use the actual universe the bot trades for ML training
-from src.data.dynamic_scanner import CANDIDATE_POOL
-VOLATILE_TICKERS = CANDIDATE_POOL
+VOLATILE_TICKERS = MAG7_AND_INDEXES
 
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/intraday/"))
 os.makedirs(DATA_DIR, exist_ok=True)
 
-async def fetch_1m_data(session: aiohttp.ClientSession, ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
+async def fetch_1m_data(session: aiohttp.ClientSession, ticker: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, bool]:
     """
     Fetches 1-minute historical data from Tiingo's IEX intraday endpoint.
-    Provides deep historical data (up to several years) for robust ML training.
-    Uses chunked requests (20 days at a time) to bypass Tiingo's 10,000 row limit.
+    Provides historical benchmark data for index/Mag 7 correlation.
+    Returns (DataFrame, is_rate_limited).
     """
     url = f"https://api.tiingo.com/iex/{ticker}/prices"
     headers = {
@@ -45,6 +43,7 @@ async def fetch_1m_data(session: aiohttp.ClientSession, ticker: str, start_date:
     
     all_dfs = []
     current_start = start_dt
+    is_rate_limited = False
     
     while current_start <= end_dt:
         current_end = min(current_start + timedelta(days=20), end_dt)
@@ -56,11 +55,14 @@ async def fetch_1m_data(session: aiohttp.ClientSession, ticker: str, start_date:
             "columns": "open,high,low,close,volume"
         }
         
-
         for attempt in range(1, 4):
             try:
                 async with session.get(url, headers=headers, params=params, timeout=20.0) as resp:
-                    if resp.status != 200:
+                    if resp.status == 429:
+                        log.warning(f"Tiingo API hourly rate limit (429) hit for {ticker}. Halting download to avoid quota burn.")
+                        is_rate_limited = True
+                        break
+                    elif resp.status != 200:
                         log.warning(f"Failed to fetch chunk for {ticker} ({current_start.date()}): status {resp.status}")
                         break
                         
@@ -83,17 +85,20 @@ async def fetch_1m_data(session: aiohttp.ClientSession, ticker: str, start_date:
                 if attempt < 3:
                     await asyncio.sleep(2)
                     
+        if is_rate_limited:
+            break
+
         # Advance by 21 days so we don't overlap the end date of the previous chunk
         current_start = current_end + timedelta(days=1)
         await asyncio.sleep(0.5) # Rate limit between chunks
         
+    final_df = pd.DataFrame()
     if all_dfs:
         final_df = pd.concat(all_dfs)
         final_df = final_df[~final_df.index.duplicated(keep='first')]
         final_df.sort_index(inplace=True)
-        return final_df
         
-    return pd.DataFrame()
+    return final_df, is_rate_limited
 
 async def main():
     if not TIINGO_TOKEN:
@@ -117,12 +122,16 @@ async def main():
                 continue
                 
             log.info(f"Fetching {ticker} (180 days)...")
-            df = await fetch_1m_data(session, ticker, start_str, end_str)
+            df, is_rate_limited = await fetch_1m_data(session, ticker, start_str, end_str)
             if not df.empty:
                 df.to_csv(file_path)
                 log.info(f"Saved {len(df)} rows for {ticker} to {file_path}")
             else:
                 log.warning(f"No data saved for {ticker}.")
+
+            if is_rate_limited:
+                log.warning("Tiingo quota/hourly rate limit (429) hit. Stopping download to prevent API lockout.")
+                break
             
             # Rate limiting safety for Tiingo
             await asyncio.sleep(1.0)

@@ -123,13 +123,8 @@ def prepare_ml_training_data(csv_path: Optional[str] = None, output_parquet: str
 async def run_pipeline():
     log.info("=== STARTING FULL BACKTEST & RETRAINING PIPELINE ===")
     
-    # 1. Download Historical 1-Minute Data
-    log.info("Step 1/4: Downloading 1-minute historical intraday data for Major Indexes & Mag 7 tickers...")
-    from src.data.historical_downloader import main as download_main
-    await download_main()
-    
-    # 2. Run Strategy Simulation
-    log.info("Step 2/4: Simulating 4-timeframe & options pricing strategy across historical bars...")
+    # 1. Run Strategy Simulation
+    log.info("Step 1/3: Simulating 4-timeframe & options pricing strategy across Tradier historical bars...")
     from src.backtest.engine import BacktestEngine
     from src.data.dynamic_scanner import CANDIDATE_POOL
     
@@ -137,13 +132,13 @@ async def run_pipeline():
     engine = BacktestEngine(token)
     await engine.run_backtest(CANDIDATE_POOL, max_holding_days=10, lookback_days=730)
     
-    # 3. Bridge Backtest CSV to Parquet Training Data
-    log.info("Step 3/4: Converting latest backtest CSV to ML training parquet format...")
+    # 2. Bridge Backtest CSV to Parquet Training Data
+    log.info("Step 2/3: Converting latest backtest CSV to ML training parquet format...")
     out_parquet = os.path.abspath("data/ml_training_data_v2.parquet")
     parquet_path = prepare_ml_training_data(output_parquet=out_parquet)
     
-    # 4. Retrain XGBoost Model
-    log.info("Step 4/4: Retraining XGBoost Sentinel ML Model...")
+    # 3. Retrain XGBoost Model
+    log.info("Step 3/3: Retraining XGBoost Sentinel ML Model...")
     from src.ai.xgb_micro_v2 import XGBMicroSentinelV2
     model = XGBMicroSentinelV2()
     if parquet_path and os.path.exists(parquet_path):
@@ -153,7 +148,7 @@ async def run_pipeline():
         log.warning("Parquet dataset file not found. Skipping training.")
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--bridge-only":
+    if "--bridge-only" in sys.argv:
         prepare_ml_training_data()
     else:
         asyncio.run(run_pipeline())
