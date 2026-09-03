@@ -38,6 +38,11 @@ class AlertGateway:
         # tells it what was actually taken via /took and /closed.
         self.risk_manager = None
         self.risk_budget = None
+        # Telegram allows roughly one message per second per chat. The engine dispatches
+        # in bursts -- 22 alerts in a single second on the last live run, which is 66 API
+        # calls across three chats -- so sends are paced rather than fired in parallel.
+        self._send_lock = asyncio.Lock()
+        self._last_sent_at = {}
 
     def attach_position_ledger(self, risk_manager) -> None:
         """Wires the position ledger so /took, /closed and /positions can reach it."""
@@ -128,22 +133,69 @@ class AlertGateway:
         )
         return await self._send_telegram(msg)
 
+    MIN_SECONDS_BETWEEN_SENDS = 1.1   # Telegram allows about one per second per chat
+    MAX_SEND_ATTEMPTS = 3
+
     async def _send_telegram(self, text: str) -> bool:
-        """Internal Telegram dispatcher supporting comma-separated chat IDs."""
-        if not self._token or not self._chat_id: return False
+        """Internal Telegram dispatcher supporting comma-separated chat IDs.
+
+        Paced and retried. A burst of alerts used to produce dozens of simultaneous API
+        calls per chat, Telegram answered 429, and the non-200 was recorded as
+        `success = False` with no log line -- so the alerts vanished with nothing to
+        show for it. Every failure is now logged with the reason Telegram gave.
+        """
+        if not self._token or not self._chat_id:
+            return False
         chat_ids = [cid.strip() for cid in str(self._chat_id).split(",") if cid.strip()]
-        success = True
         session = await self.get_session()
+        success = True
+
         for cid in chat_ids:
-            payload = {"chat_id": cid, "text": text, "parse_mode": "HTML"}
-            try:
-                async with session.post(f"{self._url}sendMessage", json=payload) as r:
-                    if r.status != 200:
-                        success = False
-            except Exception as e:
-                log.error("AlertGateway._send_telegram failed to send message to chat_id %s: %s", cid, e)
+            if not await self._send_one(session, cid, text):
                 success = False
         return success
+
+    async def _send_one(self, session, cid: str, text: str) -> bool:
+        payload = {"chat_id": cid, "text": text, "parse_mode": "HTML"}
+
+        for attempt in range(1, self.MAX_SEND_ATTEMPTS + 1):
+            async with self._send_lock:
+                wait = self.MIN_SECONDS_BETWEEN_SENDS - (
+                    asyncio.get_running_loop().time() - self._last_sent_at.get(cid, 0.0))
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                try:
+                    async with session.post(f"{self._url}sendMessage", json=payload) as r:
+                        self._last_sent_at[cid] = asyncio.get_running_loop().time()
+                        if r.status == 200:
+                            return True
+                        body = await r.text()
+                        retry_after = None
+                        if r.status == 429:
+                            try:
+                                retry_after = (await r.json()).get("parameters", {}).get("retry_after")
+                            except Exception:
+                                retry_after = None
+                except Exception as e:
+                    log.error("Telegram send to %s raised on attempt %d/%d: %s",
+                              cid, attempt, self.MAX_SEND_ATTEMPTS, e)
+                    self._last_sent_at[cid] = asyncio.get_running_loop().time()
+                    if attempt == self.MAX_SEND_ATTEMPTS:
+                        return False
+                    continue
+
+            if r.status == 429 and attempt < self.MAX_SEND_ATTEMPTS:
+                delay = float(retry_after or self.MIN_SECONDS_BETWEEN_SENDS * attempt)
+                log.warning("Telegram rate-limited chat %s; retrying in %.1fs "
+                            "(attempt %d/%d).", cid, delay, attempt, self.MAX_SEND_ATTEMPTS)
+                await asyncio.sleep(delay)
+                continue
+
+            log.error("Telegram REJECTED the message for chat %s: HTTP %s %s",
+                      cid, r.status, body[:300])
+            return False
+
+        return False
 
     async def start_listener(self):
         """Polls for basic start, status, watchlist, scan, and config commands."""
