@@ -100,6 +100,10 @@ class IntradayEngine:
         self.snapshot_engine = HourlySnapshotEngine(TRADIER_TOKEN)
         self._last_snapshot_hour = -1
         self._last_expiration_check_hour = -1
+        # Tickers already warned about a missing daily ATR. The warning below sits in the
+        # per-tick path, and atr_cache is empty until the hourly Donchian scan completes,
+        # so without this it fires several times a second per position.
+        self._atr_warned = set()
         self.signal_pipeline = SignalPipeline(
             self.news_fetcher,
             self.sentiment_analyzer,
@@ -186,6 +190,7 @@ class IntradayEngine:
                     self._bar_aggregators.clear()
                     self.extended_scanner.reset_daily()
                     self.risk_manager.reset_daily(current_date=today.strftime("%Y-%m-%d"))
+                    self._atr_warned.clear()
                     self._last_reset_date = today
                     log.info(f"🔄 [DAILY RESET] Strategy states and memory cleared for {today}. Fresh VWAP/EMA/ORB will build from 9:30.")
             except Exception as e:
@@ -399,7 +404,13 @@ class IntradayEngine:
                         if cached_atr and not pd.isna(cached_atr):
                             current_atr = cached_atr
                         else:
-                            log.warning(f"[{ticker}] No cached daily ATR available for trailing stop. Falling back to default ATR=1.5")
+                            if ticker not in self._atr_warned:
+                                self._atr_warned.add(ticker)
+                                log.warning(
+                                    f"[{ticker}] No cached daily ATR for the trailing stop; "
+                                    f"using ATR=1.5 until the hourly Donchian scan caches one. "
+                                    f"Logged once per ticker per day."
+                                )
                             current_atr = 1.5
                             
                         direction = self.risk_manager.active_positions[ticker]["direction"]

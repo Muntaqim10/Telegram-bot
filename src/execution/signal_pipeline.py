@@ -105,7 +105,10 @@ class SignalPipeline:
                 )
             else:
                 import logging
-                logging.getLogger("rallyhunter.pipeline").warning(f"[{ticker}] No cached daily ATR available. Falling back to default ATR=1.5")
+                # Fires once per signal. The engine already reports the missing cache
+                # per ticker, so this is the detail line rather than the alarm.
+                logging.getLogger("rallyhunter.pipeline").info(
+                    f"[{ticker}] No cached daily ATR; sizing the setup with ATR=1.5.")
                 risk_levels = self.risk_manager.add_position(
                     ticker, signal["entry_price"], initial_atr=1.5, 
                     direction=signal["direction"], invalidation_level=invalidation_level,
