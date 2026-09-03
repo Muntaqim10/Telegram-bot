@@ -10,40 +10,81 @@ log = logging.getLogger(__name__)
 # Both providers speak the OpenAI protocol, so switching is configuration rather than
 # code. Groq is chosen when GROQ_API_KEY is present; otherwise OpenRouter.
 PROVIDERS = {
+    # Groq first by default: its free tier costs nothing, so it absorbs the volume and
+    # the paid providers only see traffic when it fails. Reorder with LLM_PROVIDER_ORDER.
     "groq": {
+        "kind": "openai",
         "base_url": "https://api.groq.com/openai/v1",
         "key_env": "GROQ_API_KEY",
         "default_model": "llama-3.3-70b-versatile",
     },
+    # Anthropic speaks its own protocol -- the official SDK, not an OpenAI-compatible
+    # shim. Opus 5 is the default; set LLM_ANTHROPIC_MODEL to claude-haiku-4-5 for a
+    # much cheaper run, since this call is a short JSON extraction fired once per alert.
+    "anthropic": {
+        "kind": "anthropic",
+        "base_url": None,
+        "key_env": "ANTHROPIC_API_KEY",
+        "default_model": "claude-opus-5",
+        "model_env": "LLM_ANTHROPIC_MODEL",
+    },
     "openrouter": {
+        "kind": "openai",
         "base_url": "https://openrouter.ai/api/v1",
         "key_env": "OPENROUTER_API_KEY",
         "default_model": "deepseek/deepseek-v3.2",
     },
 }
 
+DEFAULT_ORDER = ["groq", "anthropic", "openrouter"]
 
-def resolve_llm_provider():
-    """Which provider to use, and with what. Returns (name, base_url, api_key, model).
 
-    LLM_PROVIDER forces a choice; otherwise the first provider with a key wins, Groq
-    first. LLM_MODEL and LLM_BASE_URL override the provider's defaults, so a renamed
-    model does not need a code change.
+# How long to stop trying a provider after it fails. A billing or auth failure will not
+# fix itself in a minute, so there is no point paying the latency on every alert; a rate
+# limit or a blip usually will.
+COOLDOWN_SECONDS = {"fatal": 1800, "transient": 60}
+
+
+def resolve_llm_providers():
+    """Every configured provider, in the order they should be tried.
+
+    Returns a list of dicts. Groq first by default because its free tier costs nothing;
+    LLM_PROVIDER pins one exclusively. LLM_MODEL and LLM_BASE_URL apply to the first
+    entry only -- they exist to correct a renamed model, not to describe a whole chain.
     """
     forced = (os.getenv("LLM_PROVIDER") or "").strip().lower()
-    order = [forced] if forced in PROVIDERS else ["groq", "openrouter"]
+    if forced in PROVIDERS:
+        order = [forced]
+    else:
+        configured = [n.strip().lower() for n in
+                      (os.getenv("LLM_PROVIDER_ORDER") or "").split(",") if n.strip()]
+        order = [n for n in configured if n in PROVIDERS] or DEFAULT_ORDER
 
+    chain = []
     for name in order:
         cfg = PROVIDERS[name]
         key = os.getenv(cfg["key_env"])
-        if key:
-            return (
-                name,
-                os.getenv("LLM_BASE_URL") or cfg["base_url"],
-                key,
-                os.getenv("LLM_MODEL") or cfg["default_model"],
-            )
-    return None, None, None, None
+        if not key:
+            continue
+        first = not chain
+        model = os.getenv(cfg.get("model_env", "")) if cfg.get("model_env") else None
+        chain.append({
+            "name": name,
+            "kind": cfg["kind"],
+            "base_url": (os.getenv("LLM_BASE_URL") if first else None) or cfg["base_url"],
+            "api_key": key,
+            "model": (os.getenv("LLM_MODEL") if first else None) or model or cfg["default_model"],
+        })
+    return chain
+
+
+def resolve_llm_provider():
+    """The first configured provider, as a tuple. Kept for callers that want one."""
+    chain = resolve_llm_providers()
+    if not chain:
+        return None, None, None, None
+    c = chain[0]
+    return c["name"], c["base_url"], c["api_key"], c["model"]
 
 class BlindSentimentAnalyzer:
     """
@@ -53,26 +94,134 @@ class BlindSentimentAnalyzer:
     """
     def __init__(self, api_key: str = None, base_url: str = None, model: str = None,
                  provider: str = None):
-        """api_key is accepted positionally for existing callers. When it is omitted the
-        provider is resolved from the environment."""
-        if api_key is None or base_url is None or model is None:
-            found, found_url, found_key, found_model = resolve_llm_provider()
-            provider = provider or found
-            base_url = base_url or found_url
-            model = model or found_model
-            api_key = api_key or found_key
+        """Builds a failover chain from the environment.
 
-        self.provider = provider or "unconfigured"
-        self.model = model
-        self._llm = AsyncOpenAI(base_url=base_url, api_key=api_key) if api_key else None
+        Explicit arguments pin a single provider, which existing callers and tests rely
+        on. Otherwise every provider holding a key is tried in turn, so one being out of
+        credits or rate-limited does not silence catalyst synthesis.
+        """
+        if api_key is not None:
+            chain = [{"name": provider or "explicit",
+                      "base_url": base_url or PROVIDERS["openrouter"]["base_url"],
+                      "api_key": api_key,
+                      "model": model or PROVIDERS["openrouter"]["default_model"]}]
+        else:
+            chain = resolve_llm_providers()
+
+        self._chain = []
+        for cfg in chain:
+            kind = cfg.get("kind", "openai")
+            if kind == "anthropic":
+                from anthropic import AsyncAnthropic
+                client = AsyncAnthropic(api_key=cfg["api_key"])
+            else:
+                client = AsyncOpenAI(base_url=cfg["base_url"], api_key=cfg["api_key"])
+            self._chain.append({
+                "name": cfg["name"],
+                "kind": kind,
+                "model": cfg["model"],
+                "client": client,
+                "unavailable_until": 0.0,
+            })
+
         self._cache: Dict[str, Dict[str, Any]] = {}
         self.cache_ttl = 300 # 5 minutes
 
-        if self._llm:
-            log.info(f"LLM provider: {self.provider} | model: {self.model} | {base_url}")
+        if self._chain:
+            self.provider = self._chain[0]["name"]
+            self.model = self._chain[0]["model"]
+            self._llm = self._chain[0]["client"]   # kept for callers that reach for it
+            log.info("LLM chain: " + " -> ".join(
+                f"{c['name']}({c['model']})" for c in self._chain))
         else:
+            self.provider, self.model, self._llm = "unconfigured", None, None
             log.warning("No LLM key found (set GROQ_API_KEY or OPENROUTER_API_KEY). "
                         "Catalyst synthesis is disabled; alerts still dispatch.")
+
+    @staticmethod
+    def _failure_kind(exc) -> str:
+        """Billing and auth failures will not clear on their own; the rest might."""
+        status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+        if status in (401, 402, 403):
+            return "fatal"
+        text = str(exc).lower()
+        if "insufficient" in text or "payment required" in text or "invalid api key" in text:
+            return "fatal"
+        return "transient"
+
+    @staticmethod
+    async def _call_openai(entry, system: str, user: str) -> str:
+        resp = await entry["client"].chat.completions.create(
+            model=entry["model"],
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": user}],
+            response_format={"type": "json_object"},
+            temperature=0.0,
+            max_tokens=500,
+            timeout=12.0,
+        )
+        return resp.choices[0].message.content
+
+    @staticmethod
+    async def _call_anthropic(entry, system: str, user: str) -> str:
+        """Anthropic's own protocol: the system prompt is a top-level parameter, not a
+        message, and the reply is a list of content blocks.
+
+        max_tokens is generous because thinking is on by default and shares the budget;
+        effort is low because this is a short structured extraction, not analysis.
+        """
+        resp = await entry["client"].messages.create(
+            model=entry["model"],
+            max_tokens=2000,
+            system=system,
+            output_config={"effort": "low"},
+            messages=[{"role": "user", "content": user}],
+            timeout=20.0,
+        )
+        if getattr(resp, "stop_reason", None) == "refusal":
+            detail = getattr(getattr(resp, "stop_details", None), "category", None)
+            raise RuntimeError(f"anthropic declined this request (category={detail})")
+        for block in resp.content:
+            if getattr(block, "type", None) == "text":
+                return block.text
+        raise RuntimeError("anthropic returned no text block")
+
+    async def _complete(self, system: str, user: str):
+        """Runs the request against each configured provider until one answers.
+
+        Returns (raw_text, provider_name). Raises the last error when every provider is
+        exhausted, so the caller's existing handling still applies.
+        """
+        import time as _time
+        if not self._chain:
+            raise RuntimeError("No LLM provider configured")
+
+        last_error = None
+        tried = []
+        for entry in self._chain:
+            if entry["unavailable_until"] > _time.time():
+                continue
+            tried.append(entry["name"])
+            try:
+                caller = (self._call_anthropic if entry["kind"] == "anthropic"
+                          else self._call_openai)
+                text = await caller(entry, system, user)
+                if entry["unavailable_until"]:
+                    log.info(f"LLM provider {entry['name']} recovered.")
+                    entry["unavailable_until"] = 0.0
+                return text, entry["name"]
+            except Exception as e:
+                last_error = e
+                kind = self._failure_kind(e)
+                entry["unavailable_until"] = _time.time() + COOLDOWN_SECONDS[kind]
+                log.warning(
+                    f"LLM provider {entry['name']} failed ({kind}): {str(e)[:160]}. "
+                    f"Skipping it for {COOLDOWN_SECONDS[kind]}s."
+                )
+
+        if not tried:
+            log.debug("Every LLM provider is cooling off; skipping synthesis this cycle.")
+        raise last_error or RuntimeError("All LLM providers are cooling off")
 
     async def score_headlines(self, ticker: str, headlines: List[str]) -> Tuple[float, str, bool, float]:
         """
@@ -172,22 +321,24 @@ class BlindSentimentAnalyzer:
         )
 
         try:
-            resp = await self._llm.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a quantitative derivatives intelligence agent. Output ONLY a valid JSON object matching the requested schema."
-                    },
-                    {"role": "user", "content": prompt}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.0,
-                max_tokens=500,
-                timeout=12.0
+            raw_text, served_by = await self._complete(
+                "You are a quantitative derivatives intelligence agent. "
+                "Output ONLY a valid JSON object matching the requested schema.",
+                prompt,
             )
+            if served_by != self.provider:
+                log.info(f"[{ticker}] catalyst synthesis served by fallback provider {served_by}.")
 
-            data = json.loads(resp.choices[0].message.content)
+            # Models that lack a JSON response mode sometimes wrap the object in prose or
+            # a fenced block; take the outermost object rather than failing the alert.
+            text = raw_text.strip()
+            if not text.startswith("{"):
+                start, end = text.find("{"), text.rfind("}")
+                if start == -1 or end <= start:
+                    raise ValueError(f"no JSON object in the reply from {served_by}")
+                text = text[start:end + 1]
+
+            data = json.loads(text)
             if isinstance(data, list) and len(data) > 0:
                 data = data[0]
 
