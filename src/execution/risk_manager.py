@@ -24,6 +24,22 @@ DEFAULT_STATE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..
 DEFAULT_MAX_HOLD_DAYS = 5
 DEFAULT_PREMIUM_STOP_PCT = -0.50
 
+# What happens when the take-profit target is reached.
+#
+# Off (default): the position closes at the target. That caps every winner at roughly
+# 1.7x daily ATR while the downside stays open to the full premium -- which truncates
+# exactly the right tail that makes long options worth owning. A stock that gaps through
+# the target and keeps going produces the same result as one that touches it and stalls.
+#
+# On: the target becomes a trigger rather than an exit. The position switches to a
+# tighter trailing stop and only that stop can close it, so a runner is allowed to run.
+# The bot alerts at the target either way -- what you do with the contract is yours.
+RUNNER_MODE = (os.getenv("RUNNER_MODE", "").strip().lower() in ("1", "true", "yes", "on"))
+try:
+    RUNNER_TRAIL_ATR = float(os.getenv("RUNNER_TRAIL_ATR", "1.5"))
+except ValueError:
+    RUNNER_TRAIL_ATR = 1.5
+
 # A position whose last observed tick is older than this is not valued at all: the
 # streaming universe rotates, so a held ticker can silently stop receiving ticks, and
 # a stop decision made on a stale price is worse than no decision.
@@ -43,11 +59,14 @@ class RiskManager:
     that give >5% momentum runners room to breathe during normal intraday pullbacks.
     """
     def __init__(self, atr_multiplier: float = 2.5, min_profit_pct: float = 0.10, state_path: str = DEFAULT_STATE_PATH,
-                 max_hold_days: int = DEFAULT_MAX_HOLD_DAYS, premium_stop_pct: float = DEFAULT_PREMIUM_STOP_PCT):
+                 max_hold_days: int = DEFAULT_MAX_HOLD_DAYS, premium_stop_pct: float = DEFAULT_PREMIUM_STOP_PCT,
+                 runner_mode: bool = None, runner_trail_atr: float = None):
         self.atr_multiplier = atr_multiplier
         self.min_profit_pct = min_profit_pct
         self.max_hold_days = max_hold_days
         self.premium_stop_pct = premium_stop_pct
+        self.runner_mode = RUNNER_MODE if runner_mode is None else runner_mode
+        self.runner_trail_atr = RUNNER_TRAIL_ATR if runner_trail_atr is None else runner_trail_atr
         self.active_positions = {}
         self.pending_evaluations = set()
         self._state_path = state_path  # set to None to disable on-disk persistence
@@ -318,40 +337,80 @@ class RiskManager:
                 log.info(f"[{ticker}] THESIS INVALIDATED: Price (${current_price:.2f}) rose back above breakdown level (${invalidation_level:.2f}). Exiting early.")
 
         if outcome is None:
-            if direction == "Long":
-                # Check if Take Profit hit
-                if current_price >= take_profit:
-                    profit_pct = (current_price - entry_price) / entry_price
-                    outcome = {"status": "TP_HIT", "exit_price": current_price, "pnl": profit_pct}
+            runner_distance = current_atr * self.runner_trail_atr if current_atr > 0 else 0
 
-                # If price moves up, raise the stop
+            if direction == "Long":
+                profit_pct = (current_price - entry_price) / entry_price
+
+                if pos.get("runner"):
+                    # Target already taken. Only the trailing stop closes this now, so the
+                    # position keeps whatever the move keeps giving.
+                    if current_price <= pos["trailing_stop"]:
+                        outcome = {"status": "RUNNER_STOPPED", "exit_price": current_price, "pnl": profit_pct}
+                    elif runner_distance > 0:
+                        new_stop = current_price - runner_distance
+                        if new_stop > pos["trailing_stop"]:
+                            pos["trailing_stop"] = new_stop
+
+                elif current_price >= take_profit:
+                    if self.runner_mode:
+                        pos["runner"] = True
+                        pos["runner_started_at"] = current_price
+                        if runner_distance > 0:
+                            pos["trailing_stop"] = max(pos["trailing_stop"], current_price - runner_distance)
+                        outcome = {"status": "TP_HIT_TRAILING", "exit_price": current_price, "pnl": profit_pct}
+                        log.info(f"[{ticker}] Target reached at ${current_price:.2f}. Runner mode: trailing "
+                                 f"at ${pos['trailing_stop']:.2f} instead of closing.")
+                    else:
+                        outcome = {"status": "TP_HIT", "exit_price": current_price, "pnl": profit_pct}
+
                 elif current_price <= pos["trailing_stop"]:
-                    profit_pct = (current_price - entry_price) / entry_price
                     outcome = {"status": "STOPPED_OUT", "exit_price": current_price, "pnl": profit_pct}
                 else:
-                    current_profit_pct = (current_price - entry_price) / entry_price
-                    if atr_distance > 0 and current_profit_pct >= self.min_profit_pct:
+                    if atr_distance > 0 and profit_pct >= self.min_profit_pct:
                         new_stop = current_price - atr_distance
                         if new_stop > current_stop:
                             pos["trailing_stop"] = new_stop
-                    
-            elif direction == "Short":
-                # Check if Take Profit hit
-                if current_price <= take_profit:
-                    profit_pct = (entry_price - current_price) / entry_price
-                    outcome = {"status": "TP_HIT", "exit_price": current_price, "pnl": profit_pct}
 
-                # Check if stopped out
+            elif direction == "Short":
+                profit_pct = (entry_price - current_price) / entry_price
+
+                if pos.get("runner"):
+                    if current_price >= pos["trailing_stop"]:
+                        outcome = {"status": "RUNNER_STOPPED", "exit_price": current_price, "pnl": profit_pct}
+                    elif runner_distance > 0:
+                        new_stop = current_price + runner_distance
+                        if new_stop < pos["trailing_stop"] or pos["trailing_stop"] == 0:
+                            pos["trailing_stop"] = new_stop
+
+                elif current_price <= take_profit:
+                    if self.runner_mode:
+                        pos["runner"] = True
+                        pos["runner_started_at"] = current_price
+                        if runner_distance > 0:
+                            existing = pos["trailing_stop"]
+                            candidate = current_price + runner_distance
+                            pos["trailing_stop"] = candidate if existing == 0 else min(existing, candidate)
+                        outcome = {"status": "TP_HIT_TRAILING", "exit_price": current_price, "pnl": profit_pct}
+                        log.info(f"[{ticker}] Target reached at ${current_price:.2f}. Runner mode: trailing "
+                                 f"at ${pos['trailing_stop']:.2f} instead of closing.")
+                    else:
+                        outcome = {"status": "TP_HIT", "exit_price": current_price, "pnl": profit_pct}
+
                 elif current_price >= pos["trailing_stop"]:
-                    profit_pct = (entry_price - current_price) / entry_price
                     outcome = {"status": "STOPPED_OUT", "exit_price": current_price, "pnl": profit_pct}
                 else:
-                    # If price moves down, lower the stop
-                    current_profit_pct = (entry_price - current_price) / entry_price
-                    if atr_distance > 0 and current_profit_pct >= self.min_profit_pct:
+                    if atr_distance > 0 and profit_pct >= self.min_profit_pct:
                         new_stop = current_price + atr_distance
                         if new_stop < current_stop or current_stop == 0:
                             pos["trailing_stop"] = new_stop
+
+        if outcome is not None and outcome["status"] == "TP_HIT_TRAILING":
+            # Not an exit: the caller alerts, the position keeps running.
+            outcome["estimated_option_pnl_pct"] = self._estimate_option_pnl(pos, current_price)
+            outcome["trailing_stop"] = pos["trailing_stop"]
+            self._persist()
+            return outcome
 
         if outcome is not None:
             # Linear delta approximation (ESTIMATE ONLY - delta-only, no theta/gamma adjustment, no live option quote)
@@ -531,6 +590,7 @@ class RiskManager:
             "last_price_ts": time.time(),
             "time_stop_warned": False,
             "premium_stop_warned": False,
+            "runner": False,
             # An alert is a suggestion, not a holding. Nothing here is a real position
             # until the trader confirms it -- the bot cannot see the brokerage account.
             "confirmed": confirmed,
@@ -608,7 +668,11 @@ class RiskManager:
                 log.warning(f"[{ticker}] Position not valued this sweep: no tick within "
                             f"{PRICE_STALE_AFTER_SECONDS}s. Premium stop cannot evaluate.")
 
-            if held is not None and held >= self.max_hold_days and not pos.get("time_stop_warned"):
+            # Never time-stop a winner. The whole point of holding a long option is the
+            # move that keeps going; nagging someone out of it is the opposite of the fix.
+            winning = est is not None and est > 0
+            if (held is not None and held >= self.max_hold_days
+                    and not winning and not pos.get("time_stop_warned")):
                 pos["time_stop_warned"] = True
                 alerts.append({
                     "ticker": ticker,

@@ -222,6 +222,47 @@ class IntradayEngine:
                 log.error(f"Hourly snapshot loop error: {e}")
             await asyncio.sleep(30)
 
+    async def _dispatch_exit_alert(self, ticker: str, pos: dict, outcome: dict) -> None:
+        """Tells the trader to act. Entry alerts were always dispatched; exits were only
+        written to a CSV, which meant the bot said when to get in and never when to get
+        out -- the failure the whole exit-discipline effort exists to fix."""
+        status = outcome["status"]
+        price = outcome.get("exit_price", 0.0)
+        stock_pnl = outcome.get("pnl")
+        opt = outcome.get("estimated_option_pnl_pct")
+        opt_txt = f"\nEstimated option P&L: <b>{opt*100:+.0f}%</b> <i>(delta+theta approximation)</i>" if opt is not None else ""
+        stock_txt = f"{stock_pnl*100:+.2f}%" if stock_pnl is not None else "n/a"
+
+        if status == "TP_HIT_TRAILING":
+            trail = outcome.get("trailing_stop")
+            body = (f"🎯 <b>TARGET REACHED — {ticker}</b> at <code>${price:.2f}</code> ({stock_txt})"
+                    f"{opt_txt}\n\n"
+                    f"Runner mode is on, so this is <b>not</b> a close signal. The position now "
+                    f"trails at <code>${trail:.2f}</code> and only that stop will end it.\n"
+                    f"Consider taking part of it here and letting the rest run.")
+        elif status == "TP_HIT":
+            body = (f"🎯 <b>TAKE PROFIT — {ticker}</b> at <code>${price:.2f}</code> ({stock_txt})"
+                    f"{opt_txt}\n\nTarget reached. Close it.")
+        elif status == "RUNNER_STOPPED":
+            body = (f"🏁 <b>RUNNER STOPPED — {ticker}</b> at <code>${price:.2f}</code> ({stock_txt})"
+                    f"{opt_txt}\n\nThe trail finally caught it after the target. Close it.")
+        elif status == "STOPPED_OUT":
+            body = (f"🛑 <b>STOPPED OUT — {ticker}</b> at <code>${price:.2f}</code> ({stock_txt})"
+                    f"{opt_txt}\n\nTrailing stop hit. Close it.")
+        else:  # INVALIDATED
+            body = (f"⚠️ <b>THESIS INVALIDATED — {ticker}</b> at <code>${price:.2f}</code> ({stock_txt})"
+                    f"{opt_txt}\n\nPrice gave back the level the setup was built on. Close it.")
+
+        body += f"\n\n<i>Reply /closed {ticker} &lt;fill&gt; to record what you actually got.</i>"
+        try:
+            if not await self.alerts.dispatch_informational(body):
+                log.error(f"[{ticker}] EXIT alert dispatch FAILED ({status}). "
+                          f"The position may be closed with no notification sent.")
+            else:
+                log.info(f"[{ticker}] Exit alert dispatched: {status}.")
+        except Exception as e:
+            log.error(f"[{ticker}] Exit alert dispatch raised ({status}): {e}")
+
     async def _dispatch_health_alerts(self, now):
         """Alerts on the two exit failures this account's own history shows: holding past
         the point the edge inverts, and riding a loser down instead of cutting it."""
@@ -364,7 +405,13 @@ class IntradayEngine:
                         direction = self.risk_manager.active_positions[ticker]["direction"]
                         outcome = self.risk_manager.update_trailing_stop(ticker, price, current_atr, direction)
                         
-                        if outcome["status"] in ("STOPPED_OUT", "TP_HIT", "INVALIDATED"):
+                        if outcome["status"] == "TP_HIT_TRAILING":
+                            # Target reached but the position stays open on a tighter
+                            # trail, so the move is allowed to keep going.
+                            asyncio.create_task(self._dispatch_exit_alert(ticker, pos, outcome))
+
+                        elif outcome["status"] in ("STOPPED_OUT", "TP_HIT", "INVALIDATED", "RUNNER_STOPPED"):
+                            confirmed = bool(pos.get("confirmed"))
                             self.risk_manager.close_trade(
                                 ticker=ticker,
                                 outcome_status=outcome["status"],
@@ -373,6 +420,10 @@ class IntradayEngine:
                                 estimated_option_pnl_pct=outcome.get("estimated_option_pnl_pct")
                             )
                             self.alerts.record_outcome(catalyst_type=catalyst_type, outcome_status=outcome["status"])
+                            # An alerter that never signals the exit is half a tool. Only
+                            # for positions actually held -- see the /took ledger.
+                            if confirmed:
+                                asyncio.create_task(self._dispatch_exit_alert(ticker, pos, outcome))
 
                     # 1. Process Tick in Strategy
                     now = pd.Timestamp.now(tz="US/Eastern")  # Cache once per tick
