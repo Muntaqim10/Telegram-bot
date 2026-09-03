@@ -30,6 +30,10 @@ class DonchianSwingStrategy:
             "Accept": "application/json"
         }
         self.atr_cache = {}
+        # Daily model features per ticker, computed from the same cached daily bars.
+        # ORB and momentum signals are intraday and cannot compute these themselves, so
+        # without this the pipeline had nothing real to score them on.
+        self.feature_cache = {}
         self._bar_cache = {}  # ticker -> {"df": DataFrame, "fetched_at": datetime}
         self._warmup_logged = False
 
@@ -85,6 +89,30 @@ class DonchianSwingStrategy:
         except Exception as e:
             log.error(f"Error fetching daily bars for {ticker}: {e}")
             return pd.DataFrame()
+
+    @staticmethod
+    def extract_model_features(df: pd.DataFrame) -> dict:
+        """The three daily features the XGB sentinel is trained on, from the latest bar.
+
+        Returns None when any of them is unavailable, so the caller marks the setup
+        UNSCORED rather than substituting a default -- feeding the model a constant is
+        what made every intraday alert score the same number.
+        """
+        try:
+            row = df.iloc[-1]
+            close = float(row["close"])
+            sma20 = float(row["SMA_20"])
+            sma60 = float(row["SMA_60"])
+            rsi = float(row["RSI_14"])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None
+        if not all(pd.notna(v) for v in (close, sma20, sma60, rsi)) or sma20 <= 0 or sma60 <= 0:
+            return None
+        return {
+            "sma20_ratio": round(close / sma20, 4),
+            "sma_spread": round((sma20 - sma60) / sma60, 4),
+            "rsi_14": round(rsi, 2),
+        }
 
     @staticmethod
     def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -243,6 +271,7 @@ class DonchianSwingStrategy:
                         if df.empty:
                             return []
                         self.atr_cache[ticker] = df["ATR_14"].iloc[-1]
+                        self.feature_cache[ticker] = self.extract_model_features(df)
                         signals = self.evaluate_signals(df, ticker)
                         if signals:
                             for sig in signals:

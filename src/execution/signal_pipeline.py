@@ -169,6 +169,18 @@ class SignalPipeline:
         MODEL_FEATURES = ("sma_spread", "sma20_ratio", "rsi_14")
         missing = [f for f in MODEL_FEATURES if signal.get(f) is None]
 
+        # Intraday strategies cannot compute daily indicators, but the Donchian scanner
+        # already fetches daily bars for the same universe. Borrow its measured values
+        # rather than inventing defaults.
+        if missing and self.donchian_strategy is not None:
+            cached = getattr(self.donchian_strategy, "feature_cache", {}).get(ticker)
+            if cached:
+                signal = {**signal, **cached}
+                missing = [f for f in MODEL_FEATURES if signal.get(f) is None]
+                if not missing:
+                    log.info(f"[{ticker}] Scored on cached daily features "
+                             f"(RSI {cached['rsi_14']}, SMA20 ratio {cached['sma20_ratio']}).")
+
         if missing:
             features_supplied = False
             win_prob, verdict = 0.5, "UNSCORED_NO_FEATURES"

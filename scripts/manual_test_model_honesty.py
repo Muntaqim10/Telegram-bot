@@ -85,6 +85,47 @@ check("pipeline no longer scores hardcoded defaults",
 check("conviction requires supplied features", "features_supplied and" in src)
 check("the win_prob gate is skipped when unscored", "model_scores and (win_prob" in src)
 
+print("\n6. Daily features are measured, and they move the score")
+import numpy as np
+import pandas as pd
+
+from src.strategy.donchian_daily import DonchianSwingStrategy
+
+
+def synthetic_bars(seed, trend):
+    rng = np.random.default_rng(seed)
+    close = np.maximum(100 + np.cumsum(rng.normal(trend, 1.5, 80)), 1.0)
+    return pd.DataFrame({"open": close, "high": close * 1.01, "low": close * 0.99,
+                         "close": close, "volume": rng.integers(10**6, 5 * 10**6, 80)})
+
+
+good = DonchianSwingStrategy.extract_model_features(
+    DonchianSwingStrategy.compute_indicators(synthetic_bars(1, 0.9)))
+check("extractor returns the three model features",
+      good is not None and set(good) == {"sma20_ratio", "sma_spread", "rsi_14"},
+      f"got {good}")
+check("extractor refuses an unusable frame",
+      DonchianSwingStrategy.extract_model_features(pd.DataFrame({"close": [1.0]})) is None)
+
+if m.is_active and m.is_discriminating:
+    probs = []
+    for seed, trend in ((1, 0.9), (2, 0.3), (3, 0.0), (4, -0.3), (5, -0.9)):
+        f = DonchianSwingStrategy.extract_model_features(
+            DonchianSwingStrategy.compute_indicators(synthetic_bars(seed, trend)))
+        if f:
+            probs.append(m.validate_setup({**f, "direction_code": 1})["win_prob"])
+    spread = max(probs) - min(probs) if probs else 0.0
+    check("measured features produce a real spread across market conditions",
+          spread >= MIN_USEFUL_SPREAD, f"spread {spread:.4f} over {len(probs)} regimes")
+    check("a hard downtrend scores below a strong uptrend",
+          probs[-1] < probs[0], f"{probs[-1]:.4f} vs {probs[0]:.4f}")
+
+print("\n7. The pipeline borrows cached daily features before giving up")
+src = inspect.getsource(SignalPipeline.process_signal)
+check("pipeline consults the Donchian feature cache", "feature_cache" in src)
+check("cache lookup happens before the UNSCORED branch",
+      src.index("feature_cache") < src.index("UNSCORED_NO_FEATURES"))
+
 print("\n" + "=" * 62)
 if failures:
     print(f"FAILED ({len(failures)}): " + ", ".join(failures))
