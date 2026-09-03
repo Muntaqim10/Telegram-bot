@@ -81,10 +81,14 @@ class IntradayEngine:
         self.sentiment_analyzer = BlindSentimentAnalyzer(OPENROUTER_API_KEY)
         self.xgb_model = XGBMicroSentinelV2()
         self.risk_manager = RiskManager()
+        from src.execution.risk_budget import RiskBudget
+        # Hard loss ceilings. Off until the trader sets them; see risk_budget.py.
+        self.risk_budget = RiskBudget()
         self.alerts = AlertGateway(redis_client)
         # The bot cannot see Robinhood, so /took and /closed are how it learns what is
         # actually held. Only confirmed positions receive exit alerts.
         self.alerts.attach_position_ledger(self.risk_manager)
+        self.alerts.risk_budget = self.risk_budget
         self._shared_http_session = None  # Lazy-initialized shared aiohttp session
         
         from src.execution.options_pricer import OptionsPricer
@@ -103,7 +107,8 @@ class IntradayEngine:
             self.risk_manager,
             self.options_pricer,
             self.alerts,
-            self.donchian_strategy
+            self.donchian_strategy,
+            self.risk_budget
         )
         self._last_reset_date = None  # Track the last date we reset ORB state
 

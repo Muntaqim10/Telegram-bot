@@ -37,6 +37,7 @@ class AlertGateway:
         # Set by the engine. The bot cannot see the brokerage account, so the trader
         # tells it what was actually taken via /took and /closed.
         self.risk_manager = None
+        self.risk_budget = None
 
     def attach_position_ledger(self, risk_manager) -> None:
         """Wires the position ledger so /took, /closed and /positions can reach it."""
@@ -173,6 +174,7 @@ class AlertGateway:
                                     "• /took TICKER [qty] [fill] - I took this trade; start watching it\n"
                                     "• /closed TICKER [fill] - I closed it; record the real result\n"
                                     "• /positions - What the bot thinks you are holding\n"
+                                    "• /budget - Loss limits and how much is left\n"
                                     "• /status - View engine status and health\n"
                                     "• /help - Display this help message\n\n"
                                     "<i>Alerts are suggestions. Only positions you confirm with /took "
@@ -194,6 +196,11 @@ class AlertGateway:
 
                             elif text.startswith("/closed"):
                                 await self._send_telegram(self._cmd_closed(text))
+
+                            elif text.startswith("/budget"):
+                                await self._send_telegram(
+                                    self.risk_budget.describe() if self.risk_budget
+                                    else "⚠️ Risk budget is not attached.")
 
                             elif text.startswith("/positions"):
                                 await self._send_telegram(self._cmd_positions())

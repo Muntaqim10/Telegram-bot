@@ -8,7 +8,7 @@ from src.backtest.stats_reader import BacktestStatsReader
 log = logging.getLogger("rallyhunter.pipeline")
 
 class SignalPipeline:
-    def __init__(self, news_fetcher, sentiment_analyzer, xgb_model, risk_manager, options_pricer, alerts, donchian_strategy=None):
+    def __init__(self, news_fetcher, sentiment_analyzer, xgb_model, risk_manager, options_pricer, alerts, donchian_strategy=None, risk_budget=None):
         self.news_fetcher = news_fetcher
         self.sentiment_analyzer = sentiment_analyzer
         self.xgb_model = xgb_model
@@ -16,6 +16,7 @@ class SignalPipeline:
         self.options_pricer = options_pricer
         self.alerts = alerts
         self.donchian_strategy = donchian_strategy
+        self.risk_budget = risk_budget
         self.earnings_calendar = EarningsCalendar()
         self.backtest_reader = BacktestStatsReader()
         
@@ -489,5 +490,24 @@ class SignalPipeline:
             early_surge_desc=early_surge_desc,
             invalidation_level=invalidation_level
         )
+
+        # Final gate: a loss ceiling the trader set. Checked here rather than earlier
+        # because only now is the actual premium known. Blocking an entry never blocks
+        # the exit warnings on positions already open.
+        if self.risk_budget is not None:
+            premium = float(pricing_data.get("ask", 0.0) or 0.0) * 100.0
+            open_positions = sum(1 for p in self.risk_manager.active_positions.values()
+                                 if p.get("confirmed"))
+            gate = self.risk_budget.check_entry(premium=premium, open_positions=open_positions)
+            if not gate["allowed"]:
+                log.warning(f"[{ticker}] Entry alert BLOCKED by risk budget: {gate['reason']}")
+                self.risk_manager.remove_position(ticker)
+                if self.risk_budget.should_announce_halt():
+                    await self.alerts.dispatch_informational(
+                        f"🛑 <b>RISK BUDGET REACHED</b>\n\n{gate['reason']}.\n\n"
+                        f"Entry alerts are paused. Exit warnings on open positions keep running.\n"
+                        f"Send /budget for the full picture."
+                    )
+                return
 
         await self.alerts.dispatch_high_conviction(trade_signal)
