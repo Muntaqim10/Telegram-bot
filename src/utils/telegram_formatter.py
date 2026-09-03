@@ -1,3 +1,4 @@
+from src.execution.options_pricer import DTE_LABEL
 from src.models.signal import TradeSignal
 
 def format_telegram_alert(signal: TradeSignal) -> str:
@@ -15,10 +16,10 @@ def format_telegram_alert(signal: TradeSignal) -> str:
         "Opening Range Put Breakdown (ORB)": "🔴 <b>OPENING RANGE INTRADAY BREAKDOWN (ORB PUTS)</b>",
         "15m ORB Breakout + 5m Trend":        "🟢 <b>INTRADAY CALL BREAKOUT (15m ORB + 5m TREND)</b>",
         "15m ORB Breakdown + 5m Trend":       "🔴 <b>INTRADAY PUT BREAKDOWN (15m ORB + 5m TREND)</b>",
-        "Volume Breakout":                    "💥 <b>VOLUME BREAKOUT (14-21 DTE CALLS)</b>",
-        "Trend Breakout":                     "📈 <b>TREND BREAKOUT (14-21 DTE CALLS)</b>",
-        "Volume Breakdown":                   "📉 <b>VOLUME BREAKDOWN (14-21 DTE PUTS)</b>",
-        "Trend Breakdown":                    "📉 <b>TREND BREAKDOWN (14-21 DTE PUTS)</b>",
+        "Volume Breakout":                    f"💥 <b>VOLUME BREAKOUT ({DTE_LABEL} CALLS)</b>",
+        "Trend Breakout":                     f"📈 <b>TREND BREAKOUT ({DTE_LABEL} CALLS)</b>",
+        "Volume Breakdown":                   f"📉 <b>VOLUME BREAKDOWN ({DTE_LABEL} PUTS)</b>",
+        "Trend Breakdown":                    f"📉 <b>TREND BREAKDOWN ({DTE_LABEL} PUTS)</b>",
         "Intraday Volume Breakout":           "🔺 <b>INTRADAY VOLUME BREAKOUT</b>",
         "Intraday Trend Breakout":            "🔺 <b>INTRADAY TREND BREAKOUT</b>",
         "Intraday Volume Breakdown":          "🔻 <b>INTRADAY VOLUME BREAKDOWN</b>",

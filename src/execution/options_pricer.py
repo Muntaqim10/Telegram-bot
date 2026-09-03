@@ -1,12 +1,45 @@
 import aiohttp
 import logging
 import asyncio
+import os
 import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 from src.data.iv_history import IVHistoryTracker
 
 log = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        v = int(raw)
+    except ValueError:
+        log.warning(f"{name}={raw!r} is not an integer; using {default}.")
+        return default
+    if v < 0:
+        log.warning(f"{name}={v} is negative; using {default}.")
+        return default
+    return v
+
+
+# Which expirations to price. The 14-21 default is a swing-trade window; it is not a law,
+# and it is worth checking against your own results before trusting it -- see
+# scripts/import_robinhood.py, which reports outcomes bucketed by DTE at entry.
+TARGET_MIN_DTE = _env_int("OPTION_MIN_DTE", 14)
+TARGET_MAX_DTE = _env_int("OPTION_MAX_DTE", 21)
+if TARGET_MAX_DTE < TARGET_MIN_DTE:
+    log.warning(f"OPTION_MAX_DTE ({TARGET_MAX_DTE}) is below OPTION_MIN_DTE ({TARGET_MIN_DTE}); "
+                f"swapping them.")
+    TARGET_MIN_DTE, TARGET_MAX_DTE = TARGET_MAX_DTE, TARGET_MIN_DTE
+TARGET_IDEAL_DTE = (TARGET_MIN_DTE + TARGET_MAX_DTE) // 2
+# How far below the window to reach when nothing lands inside it.
+FALLBACK_FLOOR_DTE = max(0, TARGET_MIN_DTE - 4)
+DTE_LABEL = f"{TARGET_MIN_DTE}-{TARGET_MAX_DTE} DTE"
+log.info(f"Options target window: {DTE_LABEL} (ideal {TARGET_IDEAL_DTE}, "
+         f"fallback floor {FALLBACK_FLOOR_DTE}). Override with OPTION_MIN_DTE / OPTION_MAX_DTE.")
 
 class OptionsPricer:
     """
@@ -23,11 +56,21 @@ class OptionsPricer:
         self._chain_cache = {}
         self.iv_tracker = IVHistoryTracker()
 
-    async def get_target_expiration(self, ticker: str, min_dte: int = 14, max_dte: int = 21, session=None) -> str:
+    async def get_target_expiration(self, ticker: str, min_dte: int = None, max_dte: int = None, session=None) -> str:
         """
-        Dynamically queries Tradier for available option expirations targeting the 14-21 DTE window.
-        Provides multi-day swing trades with low theta decay, high ~0.75 Delta intrinsic leverage, and breathing room.
+        Dynamically queries Tradier for available option expirations inside the configured
+        DTE window (OPTION_MIN_DTE / OPTION_MAX_DTE, default 14-21).
+
+        The default targets multi-day swings: low theta decay, ~0.75 delta intrinsic
+        leverage, room to breathe. A shorter window trades faster and pays less premium
+        for time. Which suits you is an empirical question about your own fills, not a
+        setting with a universally right answer.
         """
+        min_dte = TARGET_MIN_DTE if min_dte is None else min_dte
+        max_dte = TARGET_MAX_DTE if max_dte is None else max_dte
+        ideal_dte = (min_dte + max_dte) // 2
+        floor_dte = max(0, min_dte - 4)
+        window = f"{min_dte}-{max_dte} DTE"
         url = f"https://api.tradier.com/v1/markets/options/expirations?symbol={ticker}&includeAllRoots=true"
         try:
             expirations_list = []
@@ -57,24 +100,24 @@ class OptionsPricer:
                     continue
             
             if valid_exps:
-                # Pick the expiration closest to ideal 18 DTE (middle of 14-21 DTE)
-                valid_exps.sort(key=lambda x: abs(x[0] - 18))
-                log.info(f"[{ticker}] Dynamic 14-21 DTE expiration selected: {valid_exps[0][1]} ({valid_exps[0][0]} DTE)")
+                # Closest to the middle of the configured window.
+                valid_exps.sort(key=lambda x: abs(x[0] - ideal_dte))
+                log.info(f"[{ticker}] Dynamic {window} expiration selected: {valid_exps[0][1]} ({valid_exps[0][0]} DTE)")
                 return valid_exps[0][1]
             elif expirations_list:
-                # If no date falls precisely in [14, 21], find the active date closest to 18 DTE with DTE >= 10
+                # Nothing lands inside the window; take the nearest listing above the floor.
                 all_exps = []
                 for exp_str in expirations_list:
                     try:
                         exp_dt = datetime.strptime(exp_str, "%Y-%m-%d").date()
                         dte = (exp_dt - today).days
-                        if dte >= 10:
-                            all_exps.append((abs(dte - 18), exp_str, dte))
+                        if dte >= floor_dte:
+                            all_exps.append((abs(dte - ideal_dte), exp_str, dte))
                     except ValueError:
                         continue
                 if all_exps:
                     all_exps.sort(key=lambda x: x[0])
-                    log.info(f"[{ticker}] Closest available 14-21 DTE swing expiration: {all_exps[0][1]} ({all_exps[0][2]} DTE)")
+                    log.info(f"[{ticker}] Closest available {window} expiration: {all_exps[0][1]} ({all_exps[0][2]} DTE)")
                     return all_exps[0][1]
                 return expirations_list[-1]
         except Exception as e:

@@ -232,8 +232,9 @@ class SignalPipeline:
             
         log.info(f"✅ {ticker} {direction} Conviction: {conviction}. Dispatching Alert.")
 
-        # 4. Options Pricing Check (Targeting 14-21 DTE for optimal swing leverage and low theta decay)
-        expiration = await self.options_pricer.get_target_expiration(ticker, min_dte=14, max_dte=21, session=session)
+        # 4. Options Pricing Check. The DTE window is configuration, not doctrine --
+        # set OPTION_MIN_DTE / OPTION_MAX_DTE to match the horizon you actually trade.
+        expiration = await self.options_pricer.get_target_expiration(ticker, session=session)
         target_strike = float(round(signal["entry_price"])) # Spot reference (OptionsPricer optimizes to ~0.75 Delta ITM)
 
         # 4.1 Evaluate Multi-Timeframe Triad Confluence (Weekly/Daily/4H for Weeklies vs Daily/4H/1H for 3-Day)
