@@ -150,6 +150,7 @@ def build_fills(rows):
             "days_held": (close_date - open_date).days if close_date else None,
             "exit_kind": kind,
             "matched_alert_id": None,
+            "matched_alert_table": None,
             "alert_lag_days": None,
         })
     fills.sort(key=lambda f: f["open_date"])
@@ -195,7 +196,9 @@ def match(fills, alerts, window_days):
             if 0 <= lag <= window_days and (best_lag is None or lag < best_lag):
                 best, best_lag = a, lag
         if best is not None:
+            # The id alone is ambiguous: both alert tables autoincrement separately.
             f["matched_alert_id"] = best.get("id")
+            f["matched_alert_table"] = best.get("_table")
             f["alert_lag_days"] = best_lag
             matched += 1
     return matched

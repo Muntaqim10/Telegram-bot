@@ -193,10 +193,17 @@ def _init_db_sync():
             days_held INTEGER,
             exit_kind TEXT,
             matched_alert_id INTEGER,
+            matched_alert_table TEXT,
             alert_lag_days INTEGER,
             UNIQUE(contract, open_date)
         )
     """)
+    # trade_log and trade_log_archive each autoincrement their own id, so an id alone
+    # cannot identify an alert -- 61 of them currently collide.
+    try:
+        cursor.execute("ALTER TABLE real_fills ADD COLUMN matched_alert_table TEXT")
+    except Exception:
+        pass  # Column already exists
     conn.commit()
 
     _backfill_archive_outcomes(conn)
@@ -420,7 +427,8 @@ def _clear_table_sync(table: str):
 REAL_FILL_COLUMNS = [
     "contract", "ticker", "option_type", "strike", "expiration", "open_date",
     "close_date", "quantity", "entry_price", "exit_price", "cost", "proceeds",
-    "pnl", "pnl_pct", "days_held", "exit_kind", "matched_alert_id", "alert_lag_days",
+    "pnl", "pnl_pct", "days_held", "exit_kind", "matched_alert_id", "matched_alert_table",
+    "alert_lag_days",
 ]
 
 
