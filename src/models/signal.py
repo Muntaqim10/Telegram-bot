@@ -22,7 +22,6 @@ class TradeSignal:
     
     # Real Technicals (computed from live data)
     vwap_ratio: float = 1.0
-    volume: float = 0.0
     warning_tag: Optional[str] = None  # Soft-fail warnings (e.g. VWAP overextension)
     strategy_suggestion: Optional[str] = None  # Alt strategy hint (e.g. debit spread when IV is rich)
     
@@ -60,8 +59,6 @@ class TradeSignal:
     intraday_expiry: Optional[str] = None
     intraday_strike: Optional[float] = None
     intraday_option_type: Optional[str] = None
-    timeframe_target: str = "Intraday"
-    cycle_type: str = "WEEKLY SWING CYCLE"
     timeframe_matrix: Optional[Dict[str, Any]] = None
     pricing_verdict: str = ""
     pricing_reason: str = ""
@@ -80,4 +77,3 @@ class TradeSignal:
     early_surge_desc: str = ""
 
     # Fast Thesis Invalidation Level (Exit early on breakout failure)
-    invalidation_level: Optional[float] = None

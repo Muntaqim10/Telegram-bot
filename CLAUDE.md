@@ -142,16 +142,19 @@ Behaviour-changing environment variables, all opt-in unless noted:
 Required at boot (`validate_environment()` exits without them): `TRADIER_ACCESS_TOKEN`,
 `OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 
-## Known dead weight
+## Auditing this codebase
 
-Eleven `TradeSignal` fields are assigned and never read: `volume`, `timeframe_target`,
-`cycle_type`, `timeframe_matrix`, `earnings_risk`, `gex_confidence`, `otm_runner`,
-`otm_qualified`, `is_early_surge`, `early_surge_desc`, `invalidation_level`. Nothing
-imports `src/backtest/engine.py` or `src/data/historical_downloader.py`.
+`telegram_formatter` reads most `TradeSignal` fields through
+`getattr(signal, "field", default)`, not `signal.field`. Any search for unused fields
+must match both forms, and must cover `run_pipeline.py`, `scripts/` and `scratch/` —
+not just `src/`. An audit that checked only `signal.field` inside `src/` reported eleven
+dead fields and two unimported modules; on re-checking, four fields were dead and both
+modules were live (`run_pipeline.py` imports `BacktestEngine`, and both have `__main__`
+blocks).
 
-`earnings_risk` is the one worth fixing rather than deleting — it is `True` when earnings
-falls inside the option's life, which is the largest IV-crush risk in this strategy, and
-the alert never mentions it.
+## Live but switched off
 
 OTM contracts are hard-disabled in `signal_pipeline` (`raw_otm = None`,
-`otm_qualified = False`); the bot only ever proposes ~0.75-delta ITM.
+`otm_qualified = False`), so the bot only ever proposes ~0.75-delta ITM. The
+`otm_runner` rendering block in `telegram_formatter` is complete and unreachable — a
+feature that is off, not absent. Re-enabling is a product decision, not a bug fix.
