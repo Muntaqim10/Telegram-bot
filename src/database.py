@@ -150,6 +150,35 @@ def _init_db_sync():
             pass  # Column already exists
     conn.commit()
 
+    # Ground truth from the brokerage statement. The bot cannot see the account, so
+    # everything else it records is either a suggestion or a simulation; these rows are
+    # what actually happened, and they are the only legitimate input to calibration.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS real_fills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contract TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            option_type TEXT,
+            strike REAL,
+            expiration TEXT,
+            open_date TEXT NOT NULL,
+            close_date TEXT,
+            quantity REAL,
+            entry_price REAL,
+            exit_price REAL,
+            cost REAL,
+            proceeds REAL,
+            pnl REAL,
+            pnl_pct REAL,
+            days_held INTEGER,
+            exit_kind TEXT,
+            matched_alert_id INTEGER,
+            alert_lag_days INTEGER,
+            UNIQUE(contract, open_date)
+        )
+    """)
+    conn.commit()
+
     _backfill_archive_outcomes(conn)
     
     # Run CSV migrations
@@ -355,6 +384,54 @@ def _clear_table_sync(table: str):
     cursor.execute(f"DELETE FROM {table}")
     conn.commit()
     conn.close()
+
+REAL_FILL_COLUMNS = [
+    "contract", "ticker", "option_type", "strike", "expiration", "open_date",
+    "close_date", "quantity", "entry_price", "exit_price", "cost", "proceeds",
+    "pnl", "pnl_pct", "days_held", "exit_kind", "matched_alert_id", "alert_lag_days",
+]
+
+
+def _upsert_real_fills_sync(fills: list[dict[str, Any]]) -> int:
+    """Writes statement-derived fills, replacing any prior import of the same contract.
+
+    Keyed on (contract, open_date) so re-importing an overlapping statement updates
+    rows rather than duplicating them.
+    """
+    if not fills:
+        return 0
+    conn = get_connection()
+    cursor = conn.cursor()
+    cols = ", ".join(REAL_FILL_COLUMNS)
+    marks = ", ".join(["?"] * len(REAL_FILL_COLUMNS))
+    cursor.executemany(
+        f"INSERT OR REPLACE INTO real_fills ({cols}) VALUES ({marks})",
+        [tuple(f.get(c) for c in REAL_FILL_COLUMNS) for f in fills],
+    )
+    conn.commit()
+    n = cursor.rowcount
+    conn.close()
+    log.info(f"Imported {len(fills)} real fill(s) from the brokerage statement.")
+    return n
+
+
+async def upsert_real_fills(fills: list[dict[str, Any]]) -> int:
+    """Async wrapper for the statement import."""
+    return await asyncio.to_thread(_upsert_real_fills_sync, fills)
+
+
+def get_real_fills_sync() -> list[dict[str, Any]]:
+    """Every statement-derived fill, oldest first."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT * FROM real_fills ORDER BY open_date").fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        log.warning(f"Could not read real_fills: {e}")
+        return []
+    finally:
+        conn.close()
+
 
 async def clear_live_trades():
     """Clear all trades from the live trade log."""
