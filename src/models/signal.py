@@ -48,6 +48,13 @@ class TradeSignal:
     # Expiration details
     occ_symbol: str = ""
     expiry: Optional[str] = None
+    # Captured so the trade can be learned from later; see database.py decision_cols.
+    sentiment_score: Optional[float] = None
+    rsi_14: Optional[float] = None
+    sma20_ratio: Optional[float] = None
+    sma_spread: Optional[float] = None
+    z_vol: Optional[float] = None
+    iv_rank: Optional[float] = None
     target_strike: Optional[float] = None
     option_type: Optional[str] = None
     intraday_expiry: Optional[str] = None

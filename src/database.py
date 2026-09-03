@@ -142,6 +142,26 @@ def _init_db_sync():
             except Exception:
                 pass  # Column already exists
 
+    # The decision inputs behind each alert. Greeks, implied vol and the sentiment score
+    # exist only at the moment the alert is built -- historical option chains are not
+    # retrievable, so anything not captured here is gone for good and the trade can never
+    # be learned from properly. See scripts/build_training_set.py.
+    decision_cols = [
+        ("delta", "REAL"), ("theta", "REAL"), ("iv", "REAL"),
+        ("option_ask", "REAL"), ("option_bid", "REAL"), ("target_strike", "REAL"),
+        ("expiry", "TEXT"), ("option_type", "TEXT"),
+        ("sentiment_score", "REAL"), ("expected_move_pct", "REAL"),
+        ("rsi_14", "REAL"), ("sma20_ratio", "REAL"), ("sma_spread", "REAL"),
+        ("z_vol", "REAL"), ("vwap_ratio", "REAL"), ("atr_pct", "REAL"),
+        ("iv_rank", "REAL"), ("net_gex", "REAL"), ("flow_bias", "TEXT"),
+    ]
+    for table in ['trade_log', 'trade_log_archive']:
+        for col, col_type in decision_cols:
+            try:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+            except Exception:
+                pass  # Column already exists
+
     # Only closed trades have an exit, so these live on the archive alone.
     for col, col_type in [("exit_price", "REAL"), ("outcome", "TEXT")]:
         try:
@@ -190,6 +210,8 @@ async def init_db():
     await asyncio.to_thread(_init_db_sync)
 
 def _add_trade_sync(table: str, trade: dict[str, Any]):
+    """Writes only the columns the table actually has, so a caller passing extra
+    decision-input fields never breaks the journal."""
     conn = get_connection()
     cursor = conn.cursor()
     
@@ -199,11 +221,21 @@ def _add_trade_sync(table: str, trade: dict[str, Any]):
     insert_cols = []
     insert_vals = []
     
-    # Add all provided trade data
+    # Add provided trade data, skipping anything the table has no column for. A caller
+    # that passes a field this schema predates should get a journal row missing that
+    # field, not a failed insert that loses the whole record.
+    unknown = []
     for k, v in trade.items():
+        if k not in existing_cols:
+            unknown.append(k)
+            continue
         insert_cols.append(k)
         insert_vals.append(v)
-        
+    if unknown:
+        log.warning(f"{table}: dropped unknown field(s) {sorted(unknown)} from the journal "
+                    f"-- run _init_db_sync() to add the columns.")
+
+
     # Handle legacy columns for old schema
     if "z_vol" in existing_cols and "z_vol" not in trade:
         insert_cols.append("z_vol")

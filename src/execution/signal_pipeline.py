@@ -489,7 +489,14 @@ class SignalPipeline:
             otm_qualified=otm_qualified,
             is_early_surge=is_early_surge,
             early_surge_desc=early_surge_desc,
-            invalidation_level=invalidation_level
+            invalidation_level=invalidation_level,
+            # Carried through so the journal can record why this alert was made.
+            sentiment_score=sent_score,
+            rsi_14=signal.get("rsi_14"),
+            sma20_ratio=signal.get("sma20_ratio"),
+            sma_spread=signal.get("sma_spread"),
+            z_vol=z_vol_val,
+            iv_rank=pricing_data.get("iv_rank"),
         )
 
         # Final gate: a loss ceiling the trader set. Checked here rather than earlier

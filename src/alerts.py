@@ -320,7 +320,28 @@ class AlertGateway:
                 "xgb_win_prob": signal.xgb_win_prob,
                 "sentinel_verdict": signal.sentinel_verdict,
                 "conviction": signal.conviction,
-                "warning_tag": signal.warning_tag if signal.warning_tag else ""
+                "warning_tag": signal.warning_tag if signal.warning_tag else "",
+                # Decision inputs. These cannot be reconstructed later -- historical
+                # option chains are unavailable and re-scoring old news would leak
+                # hindsight -- so if they are not written here the trade is unlearnable.
+                "delta": getattr(signal, "delta", None),
+                "theta": getattr(signal, "theta", None),
+                "iv": getattr(signal, "iv", None),
+                "option_ask": getattr(signal, "option_ask", None),
+                "option_bid": getattr(signal, "option_bid", None),
+                "target_strike": getattr(signal, "target_strike", None),
+                "expiry": getattr(signal, "expiry", None),
+                "option_type": getattr(signal, "option_type", None),
+                "sentiment_score": getattr(signal, "sentiment_score", None),
+                "expected_move_pct": getattr(signal, "expected_move_pct", None),
+                "vwap_ratio": getattr(signal, "vwap_ratio", None),
+                "iv_rank": getattr(signal, "iv_rank", None),
+                "net_gex": getattr(signal, "net_gex", None),
+                "flow_bias": getattr(signal, "flow_bias", None),
+                "rsi_14": getattr(signal, "rsi_14", None),
+                "sma20_ratio": getattr(signal, "sma20_ratio", None),
+                "sma_spread": getattr(signal, "sma_spread", None),
+                "z_vol": getattr(signal, "z_vol", None),
             }
             await add_trade(trade_data)
         except Exception as e:
