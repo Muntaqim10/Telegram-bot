@@ -8,26 +8,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Run the engine (FastAPI + background tasks, uvicorn on 0.0.0.0:8000)
 uv run python src/main.py          # or: run_bot.bat
 
-# Tests — eight suites, each standalone, all must pass before committing
-python scripts/manual_test_expiration_warnings.py
-python scripts/manual_test_position_health.py
-python scripts/manual_test_position_ledger.py
-python scripts/manual_test_statement_import.py
-python scripts/manual_test_risk_budget.py
-python scripts/manual_test_model_honesty.py
-python scripts/manual_test_runner_mode.py
-python scripts/manual_test_dte_config.py
+# Tests
+python -m pytest tests/ -q                       # all of them
+python -m pytest tests/test_runner_mode.py -q    # one file
+python -m pytest tests/ -k "premium_stop" -q     # one behaviour
 
 # Lint. The configured rule set (E,F,I,B,C4,UP,S) has a ~684-error backlog nobody
 # has triaged, so day-to-day the convention is real-bug rules only:
 python -m ruff check src/ scripts/ --select F821,F841
 ```
 
-**`scripts/manual_test_*.py` is the test suite.** `tests/` is empty despite pytest being
-installed. All eight suites must pass before committing; each is standalone and exits
-non-zero on failure. When you change `RiskManager`, `signal_pipeline`, `alerts` or
-`database`, run all eight — they cover overlapping behaviour and a change to the position
-dict routinely breaks a suite three files away.
+**Run the whole suite before committing** — CI does, and a change to the position dict
+routinely breaks a module three files away because the suites cover overlapping
+behaviour. `tests/conftest.py` holds the shared fixtures; two of them exist specifically
+so no test can reach the real `data/active_positions.json` or `data/rallyhunter.db`.
+
+`tests/test_model_honesty.py` skips its model-dependent cases when
+`data/models/xgb_micro_v2.json` is absent — `data/` is gitignored, so that is the normal
+state in CI.
 
 Analysis and diagnostics (all read-only unless noted):
 
