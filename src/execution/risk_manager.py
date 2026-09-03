@@ -29,6 +29,14 @@ DEFAULT_PREMIUM_STOP_PCT = -0.50
 # a stop decision made on a stale price is worse than no decision.
 PRICE_STALE_AFTER_SECONDS = 3600
 
+# The outcome log's columns. Kept as a constant because the header is only written when
+# the file is first created: when a column was added later, existing files kept a stale
+# 7-column header while new rows carried 8 fields, which made the whole log unparseable
+# by pandas and silently unusable for calibration.
+OUTCOME_CSV_COLUMNS = ["timestamp", "ticker", "direction", "entry_price", "exit_price",
+                       "outcome", "pnl_pct", "estimated_option_pnl_pct"]
+_outcome_header_checked = False
+
 class RiskManager:
     """
     Handles intraday risk management, specifically focusing on trailing stops
@@ -306,6 +314,44 @@ class RiskManager:
                 self.active_positions[ticker]["option_expiration"] = option_expiration
             self._persist()
 
+    @staticmethod
+    def _repair_outcome_csv(file_path: str) -> None:
+        """Brings an existing outcome log up to the current column set.
+
+        Runs once per process. A header written before a column was added stays stale
+        forever, so rows drift wider than the header and pandas refuses to read the file
+        at all -- which is how 528 outcome records became unusable without anyone noticing.
+        """
+        global _outcome_header_checked
+        if _outcome_header_checked or not os.path.exists(file_path):
+            return
+        _outcome_header_checked = True
+
+        import csv as _csv
+        try:
+            with open(file_path, newline="", encoding="utf-8") as f:
+                rows = list(_csv.reader(f))
+        except Exception as e:
+            log.error(f"Could not read outcome log for repair: {e}")
+            return
+
+        if not rows or rows[0] == OUTCOME_CSV_COLUMNS:
+            return
+
+        width = len(OUTCOME_CSV_COLUMNS)
+        body = rows[1:] if rows[0] and rows[0][0] == "timestamp" else rows
+        padded = [r + [""] * (width - len(r)) if len(r) < width else r[:width] for r in body]
+        try:
+            tmp = file_path + ".tmp"
+            with open(tmp, "w", newline="", encoding="utf-8") as f:
+                w = _csv.writer(f)
+                w.writerow(OUTCOME_CSV_COLUMNS)
+                w.writerows(padded)
+            os.replace(tmp, file_path)
+            log.warning(f"Repaired outcome log header and realigned {len(padded)} row(s) to {width} columns.")
+        except Exception as e:
+            log.error(f"Could not repair outcome log: {e}")
+
     def close_trade(self, ticker: str, outcome_status: str, exit_price: float, pnl_pct: float, estimated_option_pnl_pct: float = None):
         """
         Removes the active position and logs the final outcome to CSV for ML training.
@@ -322,6 +368,7 @@ class RiskManager:
         
         file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/trade_outcomes.csv"))
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        self._repair_outcome_csv(file_path)
         file_exists = os.path.exists(file_path)
         
         opt_pnl_str = f"{estimated_option_pnl_pct:.4f}" if estimated_option_pnl_pct is not None else ""
@@ -330,7 +377,7 @@ class RiskManager:
             with open(file_path, 'a', newline='') as f:
                 writer = csv.writer(f)
                 if not file_exists:
-                    writer.writerow(["timestamp", "ticker", "direction", "entry_price", "exit_price", "outcome", "pnl_pct", "estimated_option_pnl_pct"])
+                    writer.writerow(OUTCOME_CSV_COLUMNS)
                 
                 writer.writerow([
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

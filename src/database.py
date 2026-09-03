@@ -1,8 +1,12 @@
 import asyncio
 import csv
+import logging
 import os
+import re
 import sqlite3
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/rallyhunter.db"))
 CSV_LIVE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/trade_log.csv"))
@@ -101,7 +105,9 @@ def _init_db_sync():
         )
     """)
     
-    # Create archived trade log table
+    # Create archived trade log table. exit_price/outcome are first-class columns so a
+    # closed trade can be joined back to the prediction that opened it -- they used to be
+    # concatenated into the catalyst text, which left the whole log unqueryable.
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trade_log_archive (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,7 +124,9 @@ def _init_db_sync():
             xgb_win_prob REAL DEFAULT 0.5,
             sentinel_verdict TEXT DEFAULT 'NOT_CHECKED',
             conviction TEXT DEFAULT '',
-            warning_tag TEXT DEFAULT ''
+            warning_tag TEXT DEFAULT '',
+            exit_price REAL,
+            outcome TEXT
         )
     """)
     conn.commit()
@@ -133,7 +141,16 @@ def _init_db_sync():
                 cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
             except Exception:
                 pass  # Column already exists
+
+    # Only closed trades have an exit, so these live on the archive alone.
+    for col, col_type in [("exit_price", "REAL"), ("outcome", "TEXT")]:
+        try:
+            cursor.execute(f"ALTER TABLE trade_log_archive ADD COLUMN {col} {col_type}")
+        except Exception:
+            pass  # Column already exists
     conn.commit()
+
+    _backfill_archive_outcomes(conn)
     
     # Run CSV migrations
     _migrate_csv_data(conn)
@@ -260,6 +277,49 @@ async def get_active_trade(ticker: str) -> dict[str, Any] | None:
     """Fetch the latest active trade for a ticker if it exists in the live trade log."""
     return await asyncio.to_thread(_get_active_trade_sync, ticker)
 
+OUTCOME_IN_CATALYST = re.compile(r"\s*\|?\s*Closed\s+(\w+)\s+at\s+([-\d.]+)\s*$")
+
+
+def _backfill_archive_outcomes(conn) -> int:
+    """Recovers exit_price/outcome from rows written before the dedicated columns existed.
+
+    Older builds appended "| Closed {outcome} at {price}" to the free-text catalyst field,
+    so a closed trade could not be joined to the prediction that opened it without parsing
+    prose. This lifts that text into the real columns and restores the original catalyst.
+    Idempotent: rows that already carry an outcome are skipped.
+    """
+    cursor = conn.cursor()
+    try:
+        rows = cursor.execute(
+            "SELECT id, catalyst FROM trade_log_archive "
+            "WHERE outcome IS NULL AND catalyst LIKE '%Closed %'"
+        ).fetchall()
+    except Exception as e:
+        log.warning(f"Archive backfill skipped: {e}")
+        return 0
+
+    fixed = 0
+    for row in rows:
+        rid, catalyst = row["id"], (row["catalyst"] or "")
+        m = OUTCOME_IN_CATALYST.search(catalyst)
+        if not m:
+            continue
+        try:
+            exit_price = float(m.group(2))
+        except ValueError:
+            continue
+        cursor.execute(
+            "UPDATE trade_log_archive SET outcome = ?, exit_price = ?, catalyst = ? WHERE id = ?",
+            (m.group(1), exit_price, catalyst[:m.start()].rstrip(" |"), rid),
+        )
+        fixed += 1
+
+    if fixed:
+        conn.commit()
+        log.info(f"Backfilled exit_price/outcome on {fixed} archived trade(s) from legacy catalyst text.")
+    return fixed
+
+
 def _close_trade_sync(ticker: str, exit_price: float, outcome: str):
     conn = get_connection()
     cursor = conn.cursor()
@@ -272,7 +332,9 @@ def _close_trade_sync(ticker: str, exit_price: float, outcome: str):
         if "id" in row_dict:
             del row_dict["id"]
             
-        row_dict["catalyst"] = f"{row_dict['catalyst']} | Closed {outcome} at {exit_price}" if row_dict.get('catalyst') else f"Closed {outcome} at {exit_price}"
+        # Store the exit in real columns; the catalyst stays the catalyst.
+        row_dict["exit_price"] = exit_price
+        row_dict["outcome"] = outcome
         
         insert_cols = list(row_dict.keys())
         col_str = ", ".join(insert_cols)
