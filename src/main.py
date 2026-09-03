@@ -45,6 +45,7 @@ from src.data.market_gainer_discovery import MarketGainerDiscovery, EXPANDED_UNI
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 TRADIER_TOKEN = os.getenv("TRADIER_ACCESS_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -52,7 +53,9 @@ def validate_environment():
     """Ensure critical environment variables are present before booting."""
     missing = []
     if not TRADIER_TOKEN: missing.append("TRADIER_ACCESS_TOKEN")
-    if not OPENROUTER_API_KEY: missing.append("OPENROUTER_API_KEY")
+    # Either provider will do; both speak the same protocol.
+    if not (GROQ_API_KEY or OPENROUTER_API_KEY):
+        missing.append("GROQ_API_KEY or OPENROUTER_API_KEY")
     if not TELEGRAM_BOT_TOKEN: missing.append("TELEGRAM_BOT_TOKEN")
     if not TELEGRAM_CHAT_ID: missing.append("TELEGRAM_CHAT_ID")
     
@@ -78,7 +81,8 @@ class IntradayEngine:
         self.orb_strategy = ORBStrategy(orb_minutes=15)
         self.donchian_strategy = DonchianSwingStrategy(TRADIER_TOKEN)
         self.extended_scanner = ExtendedHoursScanner()
-        self.sentiment_analyzer = BlindSentimentAnalyzer(OPENROUTER_API_KEY)
+        # Resolved from the environment: Groq when GROQ_API_KEY is set, else OpenRouter.
+        self.sentiment_analyzer = BlindSentimentAnalyzer()
         self.xgb_model = XGBMicroSentinelV2()
         self.risk_manager = RiskManager()
         from src.execution.risk_budget import RiskBudget
