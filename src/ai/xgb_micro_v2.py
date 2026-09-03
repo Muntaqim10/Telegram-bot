@@ -38,6 +38,19 @@ MODEL_FEATURES = [
     "sma_spread", "sma20_ratio", "rsi_14", "direction_code"
 ]
 
+# Feature ranges observed in the training data, used to probe whether the loaded model
+# actually responds to its inputs. A model trained on features with no signal collapses
+# to predicting the base rate for everything -- honest, but it means the conviction
+# tiers and win_prob gates downstream are ranking nothing.
+PROBE_GRID = {
+    "sma_spread": [-0.35, -0.05, 0.0, 0.08, 1.30],
+    "sma20_ratio": [0.25, 0.90, 1.04, 1.30, 3.10],
+    "rsi_14": [10.0, 30.0, 60.0, 77.0, 89.0],
+    "direction_code": [0, 1],
+}
+# Below this spread across the whole grid, the score carries no information.
+MIN_USEFUL_SPREAD = 0.02
+
 class XGBMicroSentinelV2:
     """
     XGBoost model tailored for identifying high-probability options continuation.
@@ -53,6 +66,9 @@ class XGBMicroSentinelV2:
         self.model = None
         self._is_trained = False
         self._last_mtime = None
+        # Set by _probe_discrimination() every time weights are loaded.
+        self.is_discriminating = False
+        self.prediction_spread = 0.0
         
         try:
             import xgboost as xgb
@@ -76,6 +92,7 @@ class XGBMicroSentinelV2:
                 self._is_trained = True
                 self._last_mtime = os.path.getmtime(self.model_path)
                 log.info(f"Loaded trained XGBMicroSentinelV2 (mtime: {self._last_mtime}) from {self.model_path}")
+                self._probe_discrimination()
             except Exception as e:
                 log.error(f"Failed to load XGBoost model from {self.model_path}: {e}")
                 self._is_trained = False
@@ -150,6 +167,48 @@ class XGBMicroSentinelV2:
             log.error(f"XGBMicroSentinelV2 training failed: {e}")
             return 0.0
 
+    def _probe_discrimination(self) -> None:
+        """Checks whether the loaded model's score actually varies with its inputs.
+
+        Sweeps each feature across the range seen in training and measures the spread of
+        the resulting predictions. A model fitted on features with no signal correctly
+        collapses to the base rate -- but then the conviction tiers and the win_prob gates
+        are sorting noise, and an alert that prints "HIGH conviction" is claiming
+        information nobody has. Re-run on every hot reload, so a retrain that restores
+        discrimination turns the tiers back on by itself.
+        """
+        self.is_discriminating = False
+        self.prediction_spread = 0.0
+        if not self._is_trained or not self.model:
+            return
+        try:
+            import itertools
+            rows = []
+            keys = list(PROBE_GRID)
+            for combo in itertools.product(*(PROBE_GRID[k] for k in keys)):
+                rows.append(dict(zip(keys, combo)))
+            X = pd.DataFrame(rows)
+            if hasattr(self.model, "feature_names") and self.model.feature_names:
+                cols = [c for c in self.model.feature_names if c in X.columns]
+                X = X[cols]
+            preds = self.model.predict(self.xgb.DMatrix(X))
+            self.prediction_spread = float(preds.max() - preds.min())
+            self.is_discriminating = self.prediction_spread >= MIN_USEFUL_SPREAD
+
+            if self.is_discriminating:
+                log.info(f"XGB discrimination check: spread {self.prediction_spread:.4f} "
+                         f"across {len(rows)} probe points. Conviction tiers active.")
+            else:
+                log.error(
+                    f"XGB MODEL NOT DISCRIMINATING: predictions span only "
+                    f"{self.prediction_spread:.6f} across {len(rows)} probe points "
+                    f"(range {preds.min():.4f}-{preds.max():.4f}). The score cannot rank "
+                    f"setups, so conviction tiers and the win_prob gate are DISABLED. "
+                    f"Retrain on features with signal -- see scripts/check_feature_signal.py."
+                )
+        except Exception as e:
+            log.warning(f"XGB discrimination probe failed: {e}")
+
     def validate_setup(self, features: Dict[str, Any]) -> Dict[str, Any]:
         if os.path.exists(self.model_path):
             current_mtime = os.path.getmtime(self.model_path)
@@ -174,6 +233,12 @@ class XGBMicroSentinelV2:
             dtest = self.xgb.DMatrix(X_live)
             prob = self.model.predict(dtest)[0]
             
+            # A constant score cannot separate setups; say so instead of dressing it up
+            # as a verdict the downstream gates will act on.
+            if not self.is_discriminating:
+                return {"verdict": "NO_DISCRIMINATION", "win_prob": float(prob),
+                        "prediction_spread": self.prediction_spread}
+
             # Calibrated probability thresholds (42.1% win rate on High, 18.0% on Low)
             if prob >= 0.375:
                 verdict = "CONCORDANT"

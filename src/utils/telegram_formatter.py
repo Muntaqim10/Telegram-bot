@@ -41,6 +41,15 @@ def format_telegram_alert(signal: TradeSignal) -> str:
     # Options target line (only if we have real data)
     options_lines = ""
     strike_to_use = signal.target_strike or signal.intraday_strike
+    # Only show a probability when the model can actually tell setups apart; otherwise
+    # the percentage is the same number on every alert and reads as information.
+    if "UNSCORED" in (signal.conviction or ""):
+        conviction_line = ("📊 <b>Conviction:</b> ⚪ UNSCORED "
+                           "<i>(model is not discriminating — score carries no information)</i>\n")
+    else:
+        conviction_line = (f"📊 <b>Conviction:</b> {signal.conviction} "
+                           f"(<code>{int(signal.win_probability * 100)}%</code>)\n")
+
     expiry_to_use = signal.expiry or signal.intraday_expiry
     opt_type_to_use = signal.option_type or signal.intraday_option_type
 
@@ -133,7 +142,7 @@ def format_telegram_alert(signal: TradeSignal) -> str:
         f"{otm_lines}"
         f"{tf_lines}"
         f"🧠 <b>Confluence:</b> <i>{signal.context_score}</i>\n"
-        f"📊 <b>Conviction:</b> {signal.conviction} (<code>{int(signal.win_probability * 100)}%</code>)\n"
+        f"{conviction_line}"
         f"{hist_edge_line}"
         f"{ai_thesis_line}\n"
         f"📈 <b>Market Context:</b>\n"

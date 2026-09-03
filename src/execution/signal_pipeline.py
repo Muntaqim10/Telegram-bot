@@ -161,18 +161,43 @@ class SignalPipeline:
             return
 
         # 3.6 XGBoost Sentinel Check → Conviction Tier
-        features = {
-            "sma_spread": float(signal.get("sma_spread", 0.02)),
-            "sma20_ratio": float(signal.get("sma20_ratio", vwap_ratio)),
-            "rsi_14": float(signal.get("rsi_14", 55.0)),
-            "direction_code": 1 if direction == "Long" else 0
-        }
-        xgb_result = self.xgb_model.validate_setup(features)
-        win_prob = xgb_result['win_prob']
-        verdict = xgb_result['verdict']
+        #
+        # Only the Donchian scanner computes these; ORB, momentum-movers and the
+        # extended-hours scanner do not. Scoring a setup on the fallback defaults means
+        # every alert of those types gets the same two scores (one per direction), which
+        # is exactly what the live log shows. Score only what we can actually measure.
+        MODEL_FEATURES = ("sma_spread", "sma20_ratio", "rsi_14")
+        missing = [f for f in MODEL_FEATURES if signal.get(f) is None]
+
+        if missing:
+            features_supplied = False
+            win_prob, verdict = 0.5, "UNSCORED_NO_FEATURES"
+            xgb_result = {"win_prob": win_prob, "verdict": verdict}
+            log.info(
+                f"[{ticker}] Not scored by the model: {signal.get('catalyst_type', 'signal')} "
+                f"does not compute {', '.join(missing)}. Scoring the defaults would give "
+                f"every alert of this type the same number."
+            )
+        else:
+            features_supplied = True
+            features = {
+                "sma_spread": float(signal["sma_spread"]),
+                "sma20_ratio": float(signal["sma20_ratio"]),
+                "rsi_14": float(signal["rsi_14"]),
+                "direction_code": 1 if direction == "Long" else 0
+            }
+            xgb_result = self.xgb_model.validate_setup(features)
+            win_prob = xgb_result['win_prob']
+            verdict = xgb_result['verdict']
 
         # Conviction tiers based on calibrated model output & sentiment
-        if win_prob >= 0.375 or verdict == "CONCORDANT":
+        # The score is only meaningful when real features went in AND the model can
+        # tell inputs apart. Either failing means the tiers would be ranking nothing.
+        model_scores = features_supplied and verdict != "NO_DISCRIMINATION"
+        if not model_scores:
+            # The model emits a near-constant score, so ranking on it would be theatre.
+            conviction = "⚪ UNSCORED"
+        elif win_prob >= 0.375 or verdict == "CONCORDANT":
             conviction = "🟢 HIGH"
         elif win_prob >= 0.360 or sent_score >= 0.55:
             conviction = "🟡 MEDIUM"
@@ -181,9 +206,14 @@ class SignalPipeline:
 
         log.info(f"[{ticker}] AI Filters: Sentiment={sent_score:.2f}, XGB={verdict} ({win_prob:.2f}), Conviction={conviction}")
         
-        # Enforce Fakeout Filter: Suppress low-probability traps (<36.0% win prob) or setups fighting sharp opposite news
-        if win_prob < 0.360 or verdict == "HALLUCINATION" or (direction == "Long" and sent_score < 0.30) or (direction == "Short" and sent_score > 0.70):
-            log.warning(f"[{ticker}] Alert suppressed by Fakeout Filter: XGB={verdict} ({win_prob:.2f}), Sentiment={sent_score:.2f}. Conviction: {conviction}")
+        # Enforce Fakeout Filter. The win_prob half of this only applies when the model
+        # can actually discriminate -- otherwise it either blocks everything or nothing
+        # depending on where the constant happens to fall, which is not a filter.
+        fights_news = (direction == "Long" and sent_score < 0.30) or (direction == "Short" and sent_score > 0.70)
+        model_rejects = model_scores and (win_prob < 0.360 or verdict == "HALLUCINATION")
+        if model_rejects or fights_news:
+            reason = "model" if model_rejects else "news conflict"
+            log.warning(f"[{ticker}] Alert suppressed by Fakeout Filter ({reason}): XGB={verdict} ({win_prob:.2f}), Sentiment={sent_score:.2f}. Conviction: {conviction}")
             self.risk_manager.remove_position(ticker)
             return
             
