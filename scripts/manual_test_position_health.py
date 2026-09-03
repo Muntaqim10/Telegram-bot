@@ -23,13 +23,24 @@ def check(label, condition, detail=""):
         failures.append(label)
 
 
+def add(rm, *args, **kwargs):
+    """add_position, confirmed by default.
+
+    Only confirmed positions receive alerts -- the bot cannot see the brokerage
+    account, so an unconfirmed alert is a suggestion, not a holding. The suites below
+    exercise the alerting, so they take the trade; the gate itself is tested separately.
+    """
+    kwargs.setdefault("confirmed", True)
+    return rm.add_position(*args, **kwargs)
+
+
 def new_rm():
     return RiskManager(state_path=None)
 
 
 print("\n1. TIME STOP -- the INTC 11/21/2025 pattern (bought, held 25 days, expired)")
 rm = new_rm()
-rm.add_position("INTC", entry_price=40.0, initial_atr=1.0, direction="Long",
+add(rm, "INTC", entry_price=40.0, initial_atr=1.0, direction="Long",
                 option_expiration="2026-09-18", entry_date="2026-08-26")  # 7 days held
 a = rm.check_position_health(TODAY)
 check("fires a TIME_STOP", [x["reason"] for x in a] == ["TIME_STOP"], f"got {[x['reason'] for x in a]}")
@@ -38,13 +49,13 @@ check("does not re-fire the same day", rm.check_position_health(TODAY) == [])
 
 print("\n2. A position inside the 5-day window stays quiet")
 rm = new_rm()
-rm.add_position("AAPL", entry_price=230.0, initial_atr=2.0, direction="Long",
+add(rm, "AAPL", entry_price=230.0, initial_atr=2.0, direction="Long",
                 option_expiration="2026-09-18", entry_date="2026-08-31")  # 2 days held
 check("no alert at 2 days held", rm.check_position_health(TODAY) == [])
 
 print("\n3. PREMIUM STOP -- the SOFI/GLD pattern (premium halved, still holding)")
 rm = new_rm()
-rm.add_position("GLD", entry_price=327.0, initial_atr=3.0, direction="Long",
+add(rm, "GLD", entry_price=327.0, initial_atr=3.0, direction="Long",
                 option_expiration="2026-09-18", entry_date="2026-09-01")
 rm.attach_option_pricing("GLD", option_entry_price=4.00, option_entry_delta=0.75,
                          option_entry_theta=-0.10, option_expiration="2026-09-18")
@@ -58,7 +69,7 @@ check("does not re-fire the same day", rm.check_position_health(TODAY) == [])
 
 print("\n4. A modest drawdown does not trip the premium stop")
 rm = new_rm()
-rm.add_position("NVDA", entry_price=180.0, initial_atr=2.0, direction="Long",
+add(rm, "NVDA", entry_price=180.0, initial_atr=2.0, direction="Long",
                 option_expiration="2026-09-18", entry_date="2026-09-01")
 rm.attach_option_pricing("NVDA", option_entry_price=8.00, option_entry_delta=0.75,
                          option_entry_theta=-0.10, option_expiration="2026-09-18")
@@ -67,7 +78,7 @@ check("no alert on a -19% estimate", rm.check_position_health(TODAY) == [])
 
 print("\n5. Both alerts can fire for the same position")
 rm = new_rm()
-rm.add_position("PLTR", entry_price=150.0, initial_atr=2.0, direction="Long",
+add(rm, "PLTR", entry_price=150.0, initial_atr=2.0, direction="Long",
                 option_expiration="2026-09-18", entry_date="2026-08-20")  # 13 days
 rm.attach_option_pricing("PLTR", option_entry_price=5.00, option_entry_delta=0.75,
                          option_entry_theta=-0.10, option_expiration="2026-09-18")
@@ -77,7 +88,7 @@ check("both TIME_STOP and PREMIUM_STOP fire", reasons == ["PREMIUM_STOP", "TIME_
 
 print("\n6. A position with no option pricing never trips the premium stop")
 rm = new_rm()
-rm.add_position("SPY", entry_price=660.0, initial_atr=3.0, direction="Long",
+add(rm, "SPY", entry_price=660.0, initial_atr=3.0, direction="Long",
                 entry_date="2026-09-01")
 rm.update_trailing_stop("SPY", current_price=600.0, current_atr=3.0, direction="Long")
 check("no premium alert without option data",
@@ -85,7 +96,7 @@ check("no premium alert without option data",
 
 print("\n7. Short direction is valued the right way round")
 rm = new_rm()
-rm.add_position("AMD", entry_price=165.0, initial_atr=2.0, direction="Short",
+add(rm, "AMD", entry_price=165.0, initial_atr=2.0, direction="Short",
                 option_expiration="2026-09-18", entry_date="2026-09-01")
 rm.attach_option_pricing("AMD", option_entry_price=4.00, option_entry_delta=-0.75,
                          option_entry_theta=-0.10, option_expiration="2026-09-18")
@@ -96,7 +107,7 @@ check("put loses value when the stock rises",
 
 print("\n8. reset_daily clears the flags so an open position warns again tomorrow")
 rm = new_rm()
-rm.add_position("INTC", entry_price=40.0, initial_atr=1.0, direction="Long",
+add(rm, "INTC", entry_price=40.0, initial_atr=1.0, direction="Long",
                 option_expiration="2026-09-18", entry_date="2026-08-26")
 rm.check_position_health(TODAY)
 check("suppressed while flagged", rm.check_position_health(TODAY) == [])
@@ -107,7 +118,7 @@ check("warns again after the reset",
 
 print("\n9. A failed dispatch re-queues the alert (what main.py does on send failure)")
 rm = new_rm()
-rm.add_position("META", entry_price=700.0, initial_atr=5.0, direction="Long",
+add(rm, "META", entry_price=700.0, initial_atr=5.0, direction="Long",
                 option_expiration="2026-09-18", entry_date="2026-08-26")
 rm.check_position_health(TODAY)
 check("consumed after firing", rm.check_position_health(TODAY) == [])
@@ -117,7 +128,7 @@ check("re-fires after requeue",
 
 print("\n10. Theta decay is priced in, not ignored (review finding #2)")
 rm = new_rm()
-rm.add_position("MSFT", entry_price=500.0, initial_atr=3.0, direction="Long",
+add(rm, "MSFT", entry_price=500.0, initial_atr=3.0, direction="Long",
                 option_expiration="2026-09-18", entry_date="2026-08-26")  # 7 days held
 rm.attach_option_pricing("MSFT", option_entry_price=5.00, option_entry_delta=0.75,
                          option_entry_theta=-0.30, option_expiration="2026-09-18")
@@ -129,7 +140,7 @@ check("-42% is correctly still short of the -50% line",
 
 # Same contract, same flat stock, three more days of decay -> theta alone trips the stop.
 rm = new_rm()
-rm.add_position("MSFT", entry_price=500.0, initial_atr=3.0, direction="Long",
+add(rm, "MSFT", entry_price=500.0, initial_atr=3.0, direction="Long",
                 option_expiration="2026-09-18", entry_date="2026-08-23")  # 10 days held
 rm.attach_option_pricing("MSFT", option_entry_price=5.00, option_entry_delta=0.75,
                          option_entry_theta=-0.30, option_expiration="2026-09-18")
@@ -139,7 +150,7 @@ check("theta alone trips the premium stop by day 10",
 
 print("\n11. A stale price is not used to fire a stop (review findings #1/#3)")
 rm = new_rm()
-rm.add_position("UBER", entry_price=77.0, initial_atr=1.0, direction="Long",
+add(rm, "UBER", entry_price=77.0, initial_atr=1.0, direction="Long",
                 option_expiration="2026-09-18", entry_date="2026-08-26")
 rm.attach_option_pricing("UBER", option_entry_price=4.00, option_entry_delta=0.75,
                          option_entry_theta=-0.05, option_expiration="2026-09-18")
@@ -153,7 +164,7 @@ check("TIME_STOP still fires, with no estimate attached",
 
 print("\n12. An unreadable expiration keeps the position instead of dropping it (finding #4)")
 rm = new_rm()
-rm.add_position("CVX", entry_price=230.0, initial_atr=2.0, direction="Long",
+add(rm, "CVX", entry_price=230.0, initial_atr=2.0, direction="Long",
                 option_expiration="2026-09-18T00:00:00", entry_date="2026-08-26")  # bad format
 rm.reset_daily(current_date=TODAY)
 check("position survives an unparseable expiration", "CVX" in rm.active_positions,
@@ -163,10 +174,10 @@ print("\n13. load_positions refuses to clobber live positions (finding #7)")
 import tempfile
 sf = os.path.join(tempfile.mkdtemp(), "state.json")
 seed = RiskManager(state_path=sf)
-seed.add_position("GOOG", entry_price=250.0, initial_atr=3.0, direction="Long",
+add(seed, "GOOG", entry_price=250.0, initial_atr=3.0, direction="Long",
                   option_expiration="2026-09-18")
 live = RiskManager(state_path=sf)
-live.add_position("AMD", entry_price=160.0, initial_atr=2.0, direction="Long",
+add(live, "AMD", entry_price=160.0, initial_atr=2.0, direction="Long",
                   option_expiration="2026-09-18")
 check("load refuses when positions are already in memory",
       live.load_positions(current_date=TODAY) == 0)

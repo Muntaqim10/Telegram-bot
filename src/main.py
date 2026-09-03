@@ -82,6 +82,9 @@ class IntradayEngine:
         self.xgb_model = XGBMicroSentinelV2()
         self.risk_manager = RiskManager()
         self.alerts = AlertGateway(redis_client)
+        # The bot cannot see Robinhood, so /took and /closed are how it learns what is
+        # actually held. Only confirmed positions receive exit alerts.
+        self.alerts.attach_position_ledger(self.risk_manager)
         self._shared_http_session = None  # Lazy-initialized shared aiohttp session
         
         from src.execution.options_pricer import OptionsPricer

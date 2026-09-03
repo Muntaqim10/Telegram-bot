@@ -34,6 +34,13 @@ class AlertGateway:
         self._session = None
         # In-memory catalyst performance counters: catalyst_type -> outcome counts
         self.catalyst_stats = {}
+        # Set by the engine. The bot cannot see the brokerage account, so the trader
+        # tells it what was actually taken via /took and /closed.
+        self.risk_manager = None
+
+    def attach_position_ledger(self, risk_manager) -> None:
+        """Wires the position ledger so /took, /closed and /positions can reach it."""
+        self.risk_manager = risk_manager
 
     def record_outcome(self, catalyst_type: str, outcome_status: str) -> None:
         """
@@ -163,9 +170,13 @@ class AlertGateway:
                             elif text.startswith("/help"):
                                 help_msg = (
                                     "<b>⚡ RallyHunter Commands</b>\n\n"
+                                    "• /took TICKER [qty] [fill] - I took this trade; start watching it\n"
+                                    "• /closed TICKER [fill] - I closed it; record the real result\n"
+                                    "• /positions - What the bot thinks you are holding\n"
                                     "• /status - View engine status and health\n"
-                                    "• /scan [TICKER] - Run a real-time manual scan\n"
-                                    "• /help - Display this help message"
+                                    "• /help - Display this help message\n\n"
+                                    "<i>Alerts are suggestions. Only positions you confirm with /took "
+                                    "receive expiration and exit warnings.</i>"
                                 )
                                 await self._send_telegram(help_msg)
                                 
@@ -178,12 +189,97 @@ class AlertGateway:
                                 )
                                 await self._send_telegram(status_msg)
                                     
+                            elif text.startswith("/took"):
+                                await self._send_telegram(self._cmd_took(text))
+
+                            elif text.startswith("/closed"):
+                                await self._send_telegram(self._cmd_closed(text))
+
+                            elif text.startswith("/positions"):
+                                await self._send_telegram(self._cmd_positions())
+
                             elif text.startswith("/scan"):
                                 await self._send_telegram("⚠️ <b>/scan</b> is deprecated in the new event-driven architecture.")
                                     
                 except Exception as e: 
                     log.error("AlertGateway.start_listener encountered Telegram updates polling error: %s", e)
                     await asyncio.sleep(5)
+
+    @staticmethod
+    def _parse_command(text: str):
+        """`/took PLTR 2 9.10` -> ("PLTR", [2.0, 9.10]). Numbers are optional."""
+        parts = text.split()[1:]
+        if not parts:
+            return None, []
+        ticker = parts[0].upper().lstrip("$")
+        nums = []
+        for raw in parts[1:]:
+            try:
+                nums.append(float(raw.replace("$", "").replace(",", "")))
+            except ValueError:
+                continue
+        return ticker, nums
+
+    def _cmd_took(self, text: str) -> str:
+        if self.risk_manager is None:
+            return "⚠️ Position ledger is not attached; cannot record trades."
+        ticker, nums = self._parse_command(text)
+        if not ticker:
+            return "Usage: <code>/took TICKER [quantity] [fill price]</code>"
+        qty = nums[0] if len(nums) >= 1 else None
+        fill = nums[1] if len(nums) >= 2 else None
+        pos = self.risk_manager.confirm_position(ticker, quantity=qty, fill_price=fill)
+        if pos is None:
+            return (f"❓ No tracked alert for <b>{ticker}</b>. The bot only watches tickers it "
+                    f"alerted on, and unconfirmed alerts are dropped at the next daily reset.")
+        exp = pos.get("option_expiration") or "unknown"
+        detail = f" — {qty:g} @ ${fill:.2f}" if (qty is not None and fill is not None) else ""
+        return (f"✅ Watching <b>{ticker}</b>{detail}\n"
+                f"Expiry {exp}. You will get expiration, time-stop and premium-stop warnings "
+                f"for this position until you <code>/closed {ticker}</code>.")
+
+    def _cmd_closed(self, text: str) -> str:
+        if self.risk_manager is None:
+            return "⚠️ Position ledger is not attached; cannot record trades."
+        ticker, nums = self._parse_command(text)
+        if not ticker:
+            return "Usage: <code>/closed TICKER [fill price]</code>"
+        fill = nums[0] if nums else None
+        summary = self.risk_manager.close_confirmed(ticker, exit_option_price=fill)
+        if summary is None:
+            return f"❓ <b>{ticker}</b> is not being tracked."
+        pnl = summary.get("option_pnl_pct")
+        held = summary.get("days_held")
+        bits = [f"📕 Closed <b>{ticker}</b>"]
+        if pnl is not None:
+            bits.append(f"Real option P&amp;L: <b>{pnl*100:+.1f}%</b>")
+        else:
+            bits.append("No fill price given, so no real P&amp;L recorded "
+                        "(send <code>/closed TICKER 12.40</code> next time).")
+        if held is not None:
+            bits.append(f"Held {held} day(s).")
+        return "\n".join(bits)
+
+    def _cmd_positions(self) -> str:
+        if self.risk_manager is None:
+            return "⚠️ Position ledger is not attached."
+        book = self.risk_manager.list_positions()
+        lines = ["<b>📋 Position Ledger</b>", ""]
+        if book["confirmed"]:
+            lines.append("<b>Holding (you confirmed these):</b>")
+            for ticker, pos in sorted(book["confirmed"]):
+                held = self.risk_manager.days_held(pos)
+                held_txt = f"{held}d" if held is not None else "?"
+                lines.append(f"  • <b>{ticker}</b> {pos.get('direction','')} — exp "
+                             f"{pos.get('option_expiration') or '?'}, held {held_txt}")
+        else:
+            lines.append("<i>Nothing confirmed. Reply /took TICKER when you take an alert.</i>")
+        if book["unconfirmed"]:
+            lines.append("")
+            lines.append(f"<b>Alerted, not confirmed ({len(book['unconfirmed'])}):</b>")
+            lines.append("  " + ", ".join(sorted(t for t, _ in book["unconfirmed"])))
+            lines.append("<i>These get no exit warnings and are dropped at the daily reset.</i>")
+        return "\n".join(lines)
 
     async def dispatch_high_conviction(self, signal: Any, force_send: bool = False, suppress_telegram: bool = False) -> bool:
         """Dispatches an institutional-grade signal and journals to SQLite."""

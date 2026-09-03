@@ -186,6 +186,73 @@ class RiskManager:
             pos[flag] = False
             self._persist()
 
+    def confirm_position(self, ticker: str, quantity: float = None, fill_price: float = None,
+                         entry_date: str = None) -> dict:
+        """Promotes a tracked alert into a real position the trader actually took.
+
+        Only confirmed positions receive expiration and exit alerts. Without this the bot
+        would nag about contracts that were never bought, and the trader would learn to
+        ignore the alerts -- including the one that matters.
+        """
+        pos = self.active_positions.get(ticker)
+        if pos is None:
+            return None
+        pos["confirmed"] = True
+        pos["entry_date"] = entry_date or self.market_today()
+        if quantity is not None:
+            pos["quantity"] = quantity
+        if fill_price is not None:
+            pos["fill_price"] = fill_price
+            # The trader's real fill beats the quote the pipeline saw at alert time.
+            pos["option_entry_price"] = fill_price
+        # A freshly confirmed position starts its alert budget over.
+        pos["expiration_warned"] = False
+        pos["time_stop_warned"] = False
+        pos["premium_stop_warned"] = False
+        self._persist()
+        log.info(f"[{ticker}] Position CONFIRMED by trader"
+                 f"{f' ({quantity} @ {fill_price})' if fill_price else ''}.")
+        return pos
+
+    def close_confirmed(self, ticker: str, exit_option_price: float = None) -> dict:
+        """Closes a confirmed position and records the REAL option P&L when given.
+
+        This is the only path by which a genuine fill reaches the outcome log; every
+        other number in it is a delta+theta approximation.
+        """
+        pos = self.active_positions.get(ticker)
+        if pos is None:
+            return None
+
+        entry = pos["entry_price"]
+        stock_exit = pos.get("last_price", entry)
+        stock_pnl = ((stock_exit - entry) / entry) if pos.get("direction") == "Long" else ((entry - stock_exit) / entry)
+
+        real_option_pnl = None
+        opt_entry = pos.get("option_entry_price")
+        if exit_option_price is not None and opt_entry and opt_entry > 0:
+            real_option_pnl = (exit_option_price - opt_entry) / opt_entry
+
+        summary = {
+            "ticker": ticker,
+            "direction": pos.get("direction"),
+            "quantity": pos.get("quantity"),
+            "option_entry_price": opt_entry,
+            "exit_option_price": exit_option_price,
+            "option_pnl_pct": real_option_pnl,
+            "days_held": self.days_held(pos),
+            "was_confirmed": bool(pos.get("confirmed")),
+        }
+        self.close_trade(ticker, "MANUAL_CLOSE", stock_exit, stock_pnl, real_option_pnl)
+        return summary
+
+    def list_positions(self) -> dict:
+        """Splits what the trader actually holds from what was merely alerted."""
+        confirmed, alerts_only = [], []
+        for ticker, pos in self.active_positions.items():
+            (confirmed if pos.get("confirmed") else alerts_only).append((ticker, pos))
+        return {"confirmed": confirmed, "unconfirmed": alerts_only}
+
     def set_entry_date(self, ticker: str, entry_date: str = None) -> None:
         """Records when the position was actually entered, so the hold-time check has a
         reference point. Defaults to the market's date rather than the host's, so a UTC
@@ -426,7 +493,8 @@ class RiskManager:
         invalidation_level: float = None,
         catalyst_type: str = "Standard Breakout",
         option_expiration: str = None,
-        entry_date: str = None
+        entry_date: str = None,
+        confirmed: bool = False
     ) -> dict:
         """
         Registers a new intraday runner position.
@@ -462,7 +530,12 @@ class RiskManager:
             "last_price": entry_price,
             "last_price_ts": time.time(),
             "time_stop_warned": False,
-            "premium_stop_warned": False
+            "premium_stop_warned": False,
+            # An alert is a suggestion, not a holding. Nothing here is a real position
+            # until the trader confirms it -- the bot cannot see the brokerage account.
+            "confirmed": confirmed,
+            "quantity": None,
+            "fill_price": None
         }
         self._persist()
         inval_str = f", Invalidation: {invalidation_level:.2f}" if invalidation_level is not None else ""
@@ -496,6 +569,9 @@ class RiskManager:
         """
         warnings = []
         for ticker, pos in self.active_positions.items():
+            # Unconfirmed alerts are suggestions, not holdings; never nag about them.
+            if not pos.get("confirmed"):
+                continue
             if not pos.get("option_expiration") or pos.get("expiration_warned"):
                 continue
             days_left = self._days_to_expiration(pos, current_date)
@@ -518,6 +594,8 @@ class RiskManager:
         """
         alerts = []
         for ticker, pos in self.active_positions.items():
+            if not pos.get("confirmed"):
+                continue
             held = self.days_held(pos, current_date)
 
             # Only value the position when a recent tick backs the price. A rotated-out
@@ -577,6 +655,9 @@ class RiskManager:
 
         kept = {}
         for ticker, pos in self.active_positions.items():
+            if not pos.get("confirmed"):
+                # Never taken (or never confirmed). Bounded to one day, as before.
+                continue
             days_left = self._days_to_expiration(pos, current_date)
             if days_left is None:
                 if pos.get("option_expiration"):
@@ -607,7 +688,9 @@ class RiskManager:
         self._persist()
         if kept:
             log.info(
-                f"🔄 [DAILY RESET] Cleared {dropped} intraday/expired position(s); "
-                f"carrying {len(kept)} live option position(s) forward: {', '.join(sorted(kept))}"
+                f"🔄 [DAILY RESET] Cleared {dropped} unconfirmed/intraday/expired entr(ies); "
+                f"carrying {len(kept)} confirmed position(s) forward: {', '.join(sorted(kept))}"
             )
+        elif dropped:
+            log.info(f"🔄 [DAILY RESET] Cleared {dropped} unconfirmed/intraday/expired entr(ies); nothing held.")
 

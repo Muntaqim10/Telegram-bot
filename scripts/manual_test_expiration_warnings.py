@@ -27,10 +27,21 @@ def check(label, condition, detail=""):
         failures.append(label)
 
 
+def add(rm, *args, **kwargs):
+    """add_position, confirmed by default.
+
+    Only confirmed positions receive alerts -- the bot cannot see the brokerage
+    account, so an unconfirmed alert is a suggestion, not a holding. The suites below
+    exercise the alerting, so they take the trade; the gate itself is tested separately.
+    """
+    kwargs.setdefault("confirmed", True)
+    return rm.add_position(*args, **kwargs)
+
+
 rm = RiskManager(state_path=None)
 
 print("\n1. Position expiring in 1 day (via add_position)")
-rm.add_position(
+add(rm, 
     "AAPL", entry_price=230.0, initial_atr=2.0, direction="Long",
     option_expiration=EXPIRES_TOMORROW,
 )
@@ -40,13 +51,13 @@ check("expiration_warned starts False",
       rm.active_positions["AAPL"]["expiration_warned"] is False)
 
 print("\n2. Position expiring in 7 days (should never warn)")
-rm.add_position(
+add(rm, 
     "MSFT", entry_price=500.0, initial_atr=3.0, direction="Long",
     option_expiration=EXPIRES_IN_A_WEEK,
 )
 
 print("\n3. Position that gets its expiration from the live pipeline path")
-rm.add_position("NVDA", entry_price=180.0, initial_atr=4.0, direction="Long")
+add(rm, "NVDA", entry_price=180.0, initial_atr=4.0, direction="Long")
 check("no expiration before attach_option_pricing",
       rm.active_positions["NVDA"]["option_expiration"] is None)
 rm.attach_option_pricing(
@@ -76,11 +87,11 @@ check("returns no duplicate warnings", second == [], f"got {second}")
 
 print("\n6. reset_daily() drops expired/intraday positions but CARRIES live options forward")
 rm2 = RiskManager(state_path=None)
-rm2.add_position("TSLA", entry_price=400.0, initial_atr=5.0, direction="Long",
+add(rm2, "TSLA", entry_price=400.0, initial_atr=5.0, direction="Long",
                  option_expiration=EXPIRED_YESTERDAY)   # expired -> drop
-rm2.add_position("AMD", entry_price=160.0, initial_atr=2.0, direction="Long",
+add(rm2, "AMD", entry_price=160.0, initial_atr=2.0, direction="Long",
                  option_expiration=EXPIRES_TOMORROW)    # live    -> keep
-rm2.add_position("F", entry_price=12.0, initial_atr=0.3, direction="Long")  # intraday -> drop
+add(rm2, "F", entry_price=12.0, initial_atr=0.3, direction="Long")  # intraday -> drop
 rm2.active_positions["AMD"]["expiration_warned"] = True
 rm2.reset_daily(current_date=MOCK_TODAY)
 check("live option position carried across the daily reset",
@@ -92,20 +103,20 @@ check("carried position still warns after the reset",
 
 print("\n6b. reset_daily() with no date keeps the original clear-everything behaviour")
 rm2b = RiskManager(state_path=None)
-rm2b.add_position("AMD", entry_price=160.0, initial_atr=2.0, direction="Long",
+add(rm2b, "AMD", entry_price=160.0, initial_atr=2.0, direction="Long",
                   option_expiration=EXPIRES_TOMORROW)
 rm2b.reset_daily()
 check("no current_date -> everything cleared", rm2b.active_positions == {})
 
 print("\n7. Position with no expiration is skipped, not crashed on")
 rm3 = RiskManager(state_path=None)
-rm3.add_position("SPY", entry_price=660.0, initial_atr=3.0, direction="Long")
+add(rm3, "SPY", entry_price=660.0, initial_atr=3.0, direction="Long")
 check("no warning for a position without an expiration",
       rm3.check_expiration_warnings(MOCK_TODAY) == [])
 
 print("\n8. A warning handed back after a failed send re-fires on the next sweep")
 rm4 = RiskManager(state_path=None)
-rm4.add_position("META", entry_price=700.0, initial_atr=5.0, direction="Long",
+add(rm4, "META", entry_price=700.0, initial_atr=5.0, direction="Long",
                  option_expiration=EXPIRES_TOMORROW)
 check("warns on the first sweep",
       [w["ticker"] for w in rm4.check_expiration_warnings(MOCK_TODAY)] == ["META"])
@@ -123,7 +134,7 @@ import tempfile
 state_file = os.path.join(tempfile.mkdtemp(), "active_positions.json")
 
 rm5 = RiskManager(state_path=state_file)
-rm5.add_position("GOOG", entry_price=250.0, initial_atr=3.0, direction="Long",
+add(rm5, "GOOG", entry_price=250.0, initial_atr=3.0, direction="Long",
                  option_expiration=EXPIRES_TOMORROW)
 rm5.attach_option_pricing("GOOG", option_entry_price=6.40, option_entry_delta=0.75,
                           option_entry_theta=-0.09, option_expiration=EXPIRES_TOMORROW)
@@ -143,7 +154,7 @@ check("restored position still warns",
 
 # An expired contract must not come back from the dead.
 rm7 = RiskManager(state_path=state_file)
-rm7.add_position("INTC", entry_price=25.0, initial_atr=0.5, direction="Long",
+add(rm7, "INTC", entry_price=25.0, initial_atr=0.5, direction="Long",
                  option_expiration=EXPIRED_YESTERDAY)
 rm8 = RiskManager(state_path=state_file)
 rm8.load_positions(current_date=MOCK_TODAY)
