@@ -92,6 +92,7 @@ class IntradayEngine:
         from src.data.hourly_snapshot import HourlySnapshotEngine
         self.snapshot_engine = HourlySnapshotEngine(TRADIER_TOKEN)
         self._last_snapshot_hour = -1
+        self._last_expiration_check_hour = -1
         self.signal_pipeline = SignalPipeline(
             self.news_fetcher,
             self.sentiment_analyzer,
@@ -123,7 +124,14 @@ class IntradayEngine:
                 # Concurrent discovery across Yahoo Finance screeners & Tradier bulk quotes
                 active_symbols = await self.gainer_discovery.discover_market_movers(max_symbols=150)
                 if active_symbols:
-                    await self.market_stream.update_symbols(active_symbols)
+                    # Pin every open position into the subscription. Discovery returns
+                    # today's movers; a ticker we are holding may not be one of them, and
+                    # dropping it from the stream leaves the position with no trailing
+                    # stop, no take-profit and no price at all for the life of the option.
+                    held = [t for t in self.risk_manager.active_positions if t not in active_symbols]
+                    if held:
+                        log.info(f"📌 [STREAM] Pinning {len(held)} held position(s) into the subscription: {', '.join(sorted(held))}")
+                    await self.market_stream.update_symbols(list(active_symbols) + held)
             except Exception as e:
                 log.error(f"Multi-API discovery loop error: {e}")
             await asyncio.sleep(300) # Re-scan every 5 minutes
@@ -169,7 +177,7 @@ class IntradayEngine:
                     self.momentum_movers.reset_daily_state()
                     self._bar_aggregators.clear()
                     self.extended_scanner.reset_daily()
-                    self.risk_manager.reset_daily()
+                    self.risk_manager.reset_daily(current_date=today.strftime("%Y-%m-%d"))
                     self._last_reset_date = today
                     log.info(f"🔄 [DAILY RESET] Strategy states and memory cleared for {today}. Fresh VWAP/EMA/ORB will build from 9:30.")
             except Exception as e:
@@ -177,22 +185,119 @@ class IntradayEngine:
             await asyncio.sleep(30)  # Check every 30 seconds
             
     async def run_hourly_snapshot_loop(self):
-        """Dispatches an hourly market breadth and momentum pulse card to Telegram during trading hours."""
+        """Dispatches an hourly market breadth and momentum pulse card to Telegram during trading hours,
+        and warns hourly about tracked positions whose option is about to expire."""
         log.info("⏱️ [HOURLY SNAPSHOT] Starting hourly snapshot loop...")
         while True:
             try:
                 now = pd.Timestamp.now(tz="US/Eastern")
-                # Run between 9:30 AM and 4:00 PM EST at the top of each hour (10:00, 11:00, 12:00, 13:00, 14:00, 15:00, 16:00)
-                if (9 <= now.hour <= 16) and now.minute == 0 and self._last_snapshot_hour != now.hour:
-                    session = await self.get_shared_session()
-                    card = await self.snapshot_engine.generate_market_snapshot(session=session, alert_gateway=self.alerts)
-                    if card:
-                        await self.alerts.dispatch_informational(card)
-                        self._last_snapshot_hour = now.hour
-                        log.info(f"⏱️ [HOURLY SNAPSHOT] Dispatched market pulse snapshot for {now.strftime('%I:%M %p EST')}")
+                try:
+                    # Run between 9:30 AM and 4:00 PM EST at the top of each hour (10:00, 11:00, 12:00, 13:00, 14:00, 15:00, 16:00)
+                    if (9 <= now.hour <= 16) and now.minute == 0 and self._last_snapshot_hour != now.hour:
+                        session = await self.get_shared_session()
+                        card = await self.snapshot_engine.generate_market_snapshot(session=session, alert_gateway=self.alerts)
+                        if card:
+                            await self.alerts.dispatch_informational(card)
+                            self._last_snapshot_hour = now.hour
+                            log.info(f"⏱️ [HOURLY SNAPSHOT] Dispatched market pulse snapshot for {now.strftime('%I:%M %p EST')}")
+                except Exception as e:
+                    # Isolated so a snapshot failure never skips the expiration sweep below.
+                    log.error(f"Hourly snapshot error: {e}")
+
+                # Expiration sweep: once per hour during market hours, flag any tracked
+                # position whose option is about to expire and was never marked closed.
+                if (9 <= now.hour <= 16) and self._last_expiration_check_hour != now.hour:
+                    self._last_expiration_check_hour = now.hour
+                    await self._dispatch_expiration_warnings(now)
+                    await self._dispatch_health_alerts(now)
             except Exception as e:
                 log.error(f"Hourly snapshot loop error: {e}")
             await asyncio.sleep(30)
+
+    async def _dispatch_health_alerts(self, now):
+        """Alerts on the two exit failures this account's own history shows: holding past
+        the point the edge inverts, and riding a loser down instead of cutting it."""
+        try:
+            alerts = self.risk_manager.check_position_health(now.strftime("%Y-%m-%d"))
+        except Exception as e:
+            log.error(f"Position health sweep failed: {e}")
+            return
+
+        for a in alerts:
+            ticker, reason = a["ticker"], a["reason"]
+            flag = "time_stop_warned" if reason == "TIME_STOP" else "premium_stop_warned"
+            if ticker not in self.risk_manager.active_positions:
+                continue
+
+            est = a.get("est_option_pnl_pct")
+            est_txt = (f" Estimated premium {est*100:+.0f}% (delta+theta approximation)."
+                       if est is not None else " No recent tick, so the position could not be valued.")
+            if reason == "TIME_STOP":
+                msg = (f"⏳ TIME STOP: {ticker} has been open {a['days_held']} day(s).{est_txt}\n"
+                       f"Past day {self.risk_manager.max_hold_days} this account's win rate historically "
+                       f"falls from ~50% to 27% and average return goes from positive to -20.7%. "
+                       f"Decide now: close it or accept you are outside your own edge.")
+            else:
+                msg = (f"🛑 PREMIUM STOP: {ticker} {a['detail']}.{est_txt}\n"
+                       f"69 past contracts were only sold after losing 50-99% of premium. "
+                       f"This is the point where those became unrecoverable.")
+
+            try:
+                sent = await self.alerts.dispatch_informational(msg)
+            except Exception as e:
+                log.error(f"[{ticker}] {reason} dispatch raised: {e}")
+                sent = False
+
+            if sent:
+                log.warning(f"[{ticker}] {reason} alert dispatched ({a['detail']}).")
+            else:
+                self.risk_manager.requeue_warning(ticker, flag)
+                log.error(f"[{ticker}] {reason} dispatch FAILED; re-queued for the next sweep.")
+
+    async def _dispatch_expiration_warnings(self, now):
+        """Sends one Telegram warning per position nearing expiration.
+
+        check_expiration_warnings() consumes a position's expiration_warned flag when it
+        hands the warning back, so a send that fails here MUST return the flag -- otherwise
+        one Telegram blip silently swallows the only reminder that position will ever get,
+        which is exactly the failure this feature exists to prevent.
+        """
+        try:
+            pending = self.risk_manager.check_expiration_warnings(now.strftime("%Y-%m-%d"))
+        except Exception as e:
+            log.error(f"Expiration sweep failed: {e}")
+            return
+
+        for warning in pending:
+            ticker = warning["ticker"]
+            days_left = warning["days_to_expiration"]
+
+            pos = self.risk_manager.active_positions.get(ticker)
+            if pos is None:
+                # Closed between the sweep and this dispatch; the alert text would be false.
+                log.info(f"[{ticker}] Expiration warning dropped: position closed before dispatch.")
+                continue
+
+            try:
+                sent = await self.alerts.dispatch_informational(
+                    f"⏰ EXPIRATION WARNING: {ticker} option expires in "
+                    f"{days_left} day(s). This position has not been marked closed. "
+                    f"24 previous contracts were left to expire worthless for a combined $6,008 loss -- "
+                    f"don't let this be another one."
+                )
+            except Exception as e:
+                log.error(f"[{ticker}] Expiration warning dispatch raised: {e}")
+                sent = False
+
+            if sent:
+                log.warning(f"⏰ [EXPIRATION] {ticker} expires in {days_left} day(s) and is still open. Warning dispatched.")
+            else:
+                # Hand the warning back so the next hourly sweep retries it.
+                self.risk_manager.requeue_warning(ticker, "expiration_warned")
+                log.error(
+                    f"⏰ [EXPIRATION] Telegram dispatch FAILED for {ticker} "
+                    f"({days_left} day(s) to expiry). Warning re-queued for the next hourly sweep."
+                )
 
     async def _dispatch_signal_task(self, signal: dict, spy_vwap_ratio: float):
         """Background wrapper to process signals without blocking the tick stream loop."""
@@ -333,6 +438,17 @@ async def lifespan(app: FastAPI):
     db._init_db_sync()
     
     app.state.engine = IntradayEngine(app.state.redis)
+
+    # Restore open option positions from the previous run. Without this a restart
+    # silently abandons every tracked contract, which is how positions ended up
+    # expiring worthless with nobody watching them.
+    try:
+        today_et = pd.Timestamp.now(tz="US/Eastern").strftime("%Y-%m-%d")
+        restored = app.state.engine.risk_manager.load_positions(current_date=today_et)
+        if restored:
+            log.info(f"[STATE] Restored {restored} open position(s) from the previous run.")
+    except Exception as e:
+        log.error(f"[STATE] Failed to restore persisted positions: {e}")
     
     # Pre-flight Type Safety Self-Diagnostic Check
     log.info("[DIAGNOSTIC] Running pre-flight string tick & type safety verification...")

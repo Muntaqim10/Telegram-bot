@@ -263,8 +263,11 @@ class SignalPipeline:
             ticker=ticker,
             option_entry_price=pricing_data.get("ask", 0.0),
             option_entry_delta=pricing_data.get("delta", 0.0),
-            option_entry_theta=pricing_data.get("theta", 0.0)
+            option_entry_theta=pricing_data.get("theta", 0.0),
+            option_expiration=pricing_data.get("expiration", expiration)
         )
+        # No argument: RiskManager stamps the market's date, not the host's.
+        self.risk_manager.set_entry_date(ticker)
         
         # Pull the actual chosen strike, which might differ from target_strike due to affordability/liquidity gates
         actual_strike = pricing_data.get("target_strike", target_strike)

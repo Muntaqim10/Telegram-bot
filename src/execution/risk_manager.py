@@ -1,4 +1,8 @@
 import logging
+import json
+import os
+import time
+from datetime import datetime
 import pandas as pd
 import numpy as np
 import asyncio
@@ -6,16 +10,39 @@ from src.database import close_trade as db_close_trade
 
 log = logging.getLogger(__name__)
 
+# Open option positions are multi-day (14-21 DTE) instruments, so they have to
+# outlive both the daily reset and a process restart -- otherwise nothing is left
+# watching them when expiration arrives.
+DEFAULT_STATE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/active_positions.json"))
+
+# Thresholds derived from this account's own 2019-2026 Robinhood history:
+#   hold 0 days  -> 50% win rate, +24.3% avg return, +$5,263 net
+#   hold 1 day   -> 53% win rate,  +4.6% avg return, +$7,329 net
+#   hold 2-5 days-> 44% win rate,  +6.1% avg return, +$6,077 net
+#   hold 6+ days -> 27% win rate, -20.7% avg return, -$1,987 net   <-- the leak
+# and 69 closed contracts were sold only after losing 50-99% of premium.
+DEFAULT_MAX_HOLD_DAYS = 5
+DEFAULT_PREMIUM_STOP_PCT = -0.50
+
+# A position whose last observed tick is older than this is not valued at all: the
+# streaming universe rotates, so a held ticker can silently stop receiving ticks, and
+# a stop decision made on a stale price is worse than no decision.
+PRICE_STALE_AFTER_SECONDS = 3600
+
 class RiskManager:
     """
     Handles intraday risk management, specifically focusing on trailing stops
     that give >5% momentum runners room to breathe during normal intraday pullbacks.
     """
-    def __init__(self, atr_multiplier: float = 2.5, min_profit_pct: float = 0.10):
+    def __init__(self, atr_multiplier: float = 2.5, min_profit_pct: float = 0.10, state_path: str = DEFAULT_STATE_PATH,
+                 max_hold_days: int = DEFAULT_MAX_HOLD_DAYS, premium_stop_pct: float = DEFAULT_PREMIUM_STOP_PCT):
         self.atr_multiplier = atr_multiplier
         self.min_profit_pct = min_profit_pct
+        self.max_hold_days = max_hold_days
+        self.premium_stop_pct = premium_stop_pct
         self.active_positions = {}
         self.pending_evaluations = set()
+        self._state_path = state_path  # set to None to disable on-disk persistence
         
     def mark_pending(self, ticker: str) -> bool:
         """Atomically mark a ticker as currently evaluating to prevent double-entry race conditions."""
@@ -27,6 +54,138 @@ class RiskManager:
     def clear_pending(self, ticker: str):
         """Release the evaluation lock for a ticker."""
         self.pending_evaluations.discard(ticker)
+
+    @staticmethod
+    def market_today() -> str:
+        """Today's date in market time. Every date in this class is US/Eastern so that
+        entry dates, hold counts and expiration checks cannot disagree on a UTC host."""
+        return pd.Timestamp.now(tz="US/Eastern").strftime("%Y-%m-%d")
+
+    def days_held(self, pos: dict, current_date: str = None):
+        """Calendar days the position has been open, or None if the entry date is
+        missing or unparseable. Calendar days (not trading days) to match the basis
+        the max_hold_days threshold was measured on."""
+        entry_date = pos.get("entry_date")
+        if not entry_date:
+            return None
+        try:
+            cur = datetime.strptime(str(current_date or self.market_today()), "%Y-%m-%d").date()
+            ent = datetime.strptime(str(entry_date), "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return None
+        return (cur - ent).days
+
+    def _estimate_option_pnl(self, pos: dict, current_price: float, current_date: str = None):
+        """Approximates the option's return from entry delta plus elapsed theta decay.
+
+        ESTIMATE ONLY: linear in the underlying, no gamma, no vega/IV change, no live
+        option quote. Theta matters here because the alerts that consume this fire on
+        positions held for days -- ignoring it made the estimate optimistic by exactly
+        the amount that had decayed away. Returns None when there is no option data to
+        work from, rather than fabricating a number.
+        """
+        opt_entry = pos.get("option_entry_price")
+        opt_delta = pos.get("option_entry_delta")
+        if not (opt_entry and opt_entry > 0 and opt_delta is not None and opt_delta != 0):
+            return None
+
+        stock_move = current_price - pos["entry_price"]
+        estimated_move = stock_move * abs(opt_delta)
+        if pos.get("direction") == "Short":
+            estimated_move = -stock_move * abs(opt_delta)
+
+        # Theta is per-day and negative for long premium; clamp so a bad feed can only
+        # ever decay the estimate, never inflate it.
+        theta = pos.get("option_entry_theta")
+        held = self.days_held(pos, current_date)
+        decay = 0.0
+        if theta is not None and held:
+            decay = min(0.0, float(theta)) * max(0, held)
+
+        estimated_price = max(0.01, opt_entry + estimated_move + decay)
+        return (estimated_price - opt_entry) / opt_entry
+
+    def _price_is_fresh(self, pos: dict) -> bool:
+        """True when the last observed tick is recent enough to value the position."""
+        ts = pos.get("last_price_ts")
+        if not ts:
+            return False
+        try:
+            return (time.time() - float(ts)) <= PRICE_STALE_AFTER_SECONDS
+        except (TypeError, ValueError):
+            return False
+
+    def _persist(self) -> None:
+        """Writes active positions to disk so a restart does not lose track of open
+        contracts. Best-effort by design: a disk problem must never interrupt trading."""
+        if not self._state_path:
+            return
+        try:
+            os.makedirs(os.path.dirname(self._state_path), exist_ok=True)
+            tmp_path = self._state_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(self.active_positions, f, indent=2)
+            os.replace(tmp_path, self._state_path)  # atomic swap; never a half-written file
+        except Exception as e:
+            log.error(f"Failed to persist active positions: {e}")
+
+    def load_positions(self, current_date: str = None) -> int:
+        """Restores positions saved by a previous run, dropping any whose option has
+        already expired. Returns the number of positions restored."""
+        if self.active_positions:
+            log.warning(
+                f"load_positions() called with {len(self.active_positions)} live position(s) already "
+                f"in memory; refusing to clobber them."
+            )
+            return 0
+        if not self._state_path or not os.path.exists(self._state_path):
+            return 0
+        try:
+            with open(self._state_path, encoding="utf-8") as f:
+                saved = json.load(f)
+        except Exception as e:
+            log.error(f"Failed to load persisted positions: {e}")
+            return 0
+
+        if not isinstance(saved, dict):
+            log.error("Persisted position state is not a mapping; ignoring it.")
+            return 0
+
+        restored = {}
+        for ticker, pos in saved.items():
+            if not isinstance(pos, dict) or "entry_price" not in pos or "direction" not in pos:
+                log.warning(f"Skipping malformed persisted position for {ticker}.")
+                continue
+            if current_date is not None:
+                days_left = self._days_to_expiration(pos, current_date)
+                if days_left is not None and days_left < 0:
+                    log.info(f"[{ticker}] Persisted position discarded: option expired {pos.get('option_expiration')}.")
+                    continue
+            restored[ticker] = pos
+
+        self.active_positions = restored
+        if restored:
+            log.info(f"Restored {len(restored)} active position(s) from disk: {', '.join(sorted(restored))}")
+        self._persist()
+        return len(restored)
+
+    def requeue_warning(self, ticker: str, flag: str = "expiration_warned") -> None:
+        """Hands a consumed warning back so the next sweep retries it. Called when a
+        Telegram dispatch fails -- without it, one failed send silently swallows the
+        only alert that position will ever produce."""
+        pos = self.active_positions.get(ticker)
+        if pos is not None:
+            pos[flag] = False
+            self._persist()
+
+    def set_entry_date(self, ticker: str, entry_date: str = None) -> None:
+        """Records when the position was actually entered, so the hold-time check has a
+        reference point. Defaults to the market's date rather than the host's, so a UTC
+        server does not record tomorrow for an evening signal."""
+        pos = self.active_positions.get(ticker)
+        if pos is not None:
+            pos["entry_date"] = entry_date or self.market_today()
+            self._persist()
 
     def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> float:
         """
@@ -55,6 +214,8 @@ class RiskManager:
             return {"status": "NO_POSITION"}
             
         pos = self.active_positions[ticker]
+        pos["last_price"] = current_price  # lets the hourly health sweep value the position
+        pos["last_price_ts"] = time.time()  # ...but only while it is demonstrably fresh
         entry_price = pos["entry_price"]
         current_stop = pos["trailing_stop"]
         take_profit = pos["take_profit"]
@@ -63,6 +224,7 @@ class RiskManager:
         outcome = None
         
         # Track favorable movement
+        was_favorable = pos.get("has_moved_favorably", False)
         if direction == "Long" and current_price > entry_price:
             pos["has_moved_favorably"] = True
         elif direction == "Short" and current_price < entry_price:
@@ -119,27 +281,30 @@ class RiskManager:
         if outcome is not None:
             # Linear delta approximation (ESTIMATE ONLY - delta-only, no theta/gamma adjustment, no live option quote)
             # This estimates the option's return using entry delta as a linear approximation since we don't have a continuous live option tick feed.
-            opt_entry = pos.get("option_entry_price")
-            opt_delta = pos.get("option_entry_delta")
-            if opt_entry and opt_entry > 0 and opt_delta is not None and opt_delta != 0:
-                stock_move = current_price - entry_price
-                estimated_opt_move = stock_move * abs(opt_delta)
-                if direction == "Short":
-                    estimated_opt_move = -stock_move * abs(opt_delta)
-                estimated_opt_price = max(0.01, opt_entry + estimated_opt_move)
-                outcome["estimated_option_pnl_pct"] = (estimated_opt_price - opt_entry) / opt_entry
-            else:
-                outcome["estimated_option_pnl_pct"] = None  # no option data available, don't fabricate a number
+            outcome["estimated_option_pnl_pct"] = self._estimate_option_pnl(pos, current_price)  # theta-aware
             return outcome
                 
+        # Persist only when the position's durable state actually moved -- writing on
+        # every tick would put a disk write in the hot path.
+        if pos["trailing_stop"] != current_stop or pos.get("has_moved_favorably", False) != was_favorable:
+            self._persist()
+
         return {"status": "ACTIVE", "current_stop": pos["trailing_stop"]}
 
-    def attach_option_pricing(self, ticker: str, option_entry_price: float, option_entry_delta: float, option_entry_theta: float) -> None:
-        """Attaches real option entry data to an already-registered position."""
+    def attach_option_pricing(self, ticker: str, option_entry_price: float, option_entry_delta: float, option_entry_theta: float, option_expiration: str = None) -> None:
+        """Attaches real option entry data to an already-registered position.
+
+        option_expiration is attached here rather than in add_position() because the
+        pipeline registers the position before it resolves the option chain -- this is
+        the first point in the flow where the contract's expiration date is known.
+        """
         if ticker in self.active_positions:
             self.active_positions[ticker]["option_entry_price"] = option_entry_price
             self.active_positions[ticker]["option_entry_delta"] = option_entry_delta
             self.active_positions[ticker]["option_entry_theta"] = option_entry_theta
+            if option_expiration:
+                self.active_positions[ticker]["option_expiration"] = option_expiration
+            self._persist()
 
     def close_trade(self, ticker: str, outcome_status: str, exit_price: float, pnl_pct: float, estimated_option_pnl_pct: float = None):
         """
@@ -149,11 +314,11 @@ class RiskManager:
             return
 
         pos = self.active_positions.pop(ticker)
+        self._persist()
         
         # Log to file
         import os
         import csv
-        from datetime import datetime
         
         file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/trade_outcomes.csv"))
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -198,6 +363,7 @@ class RiskManager:
         was sent). This is distinct from close_trade(), which logs a 
         real outcome for a position that was genuinely tracked."""
         self.active_positions.pop(ticker, None)
+        self._persist()
 
     def add_position(
         self, 
@@ -211,7 +377,9 @@ class RiskManager:
         option_entry_delta: float = None,
         option_entry_theta: float = None,
         invalidation_level: float = None,
-        catalyst_type: str = "Standard Breakout"
+        catalyst_type: str = "Standard Breakout",
+        option_expiration: str = None,
+        entry_date: str = None
     ) -> dict:
         """
         Registers a new intraday runner position.
@@ -240,13 +408,159 @@ class RiskManager:
             "option_entry_theta": option_entry_theta,
             "invalidation_level": invalidation_level,
             "has_moved_favorably": False,
-            "catalyst_type": catalyst_type
+            "catalyst_type": catalyst_type,
+            "option_expiration": option_expiration,
+            "expiration_warned": False,
+            "entry_date": entry_date,
+            "last_price": entry_price,
+            "last_price_ts": time.time(),
+            "time_stop_warned": False,
+            "premium_stop_warned": False
         }
+        self._persist()
         inval_str = f", Invalidation: {invalidation_level:.2f}" if invalidation_level is not None else ""
         log.info(f"Position added for {ticker} ({direction}) at {entry_price}. Stop: {initial_stop:.2f}, TP: {tp:.2f}{inval_str}")
         return {"stop_loss": initial_stop, "take_profit": tp}
         
-    def reset_daily(self):
-        """Clears active positions to prevent stale runners from leaking into the next day."""
-        self.active_positions.clear()
+    def _days_to_expiration(self, pos: dict, current_date: str):
+        """Calendar days from current_date to the position's option expiration.
+
+        Both dates use the "%Y-%m-%d" convention used everywhere else in the pipeline.
+        Returns None when the position carries no usable expiration date.
+        """
+        exp_str = pos.get("option_expiration")
+        if not exp_str:
+            return None
+        try:
+            exp_dt = datetime.strptime(str(exp_str), "%Y-%m-%d").date()
+            cur_dt = datetime.strptime(str(current_date), "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            log.warning(f"Unparseable expiration '{exp_str}' or current date '{current_date}'; skipping expiration check.")
+            return None
+        return (exp_dt - cur_dt).days
+
+    def check_expiration_warnings(self, current_date: str) -> list[dict]:
+        """Returns a list of {ticker, days_to_expiration} for all active positions
+        whose option_expiration is within 2 days of current_date and haven't already
+        been warned about.
+
+        Each position fires at most one warning; reset_daily() clears the flag so a
+        position still open the next day warns again.
+        """
+        warnings = []
+        for ticker, pos in self.active_positions.items():
+            if not pos.get("option_expiration") or pos.get("expiration_warned"):
+                continue
+            days_left = self._days_to_expiration(pos, current_date)
+            if days_left is None:
+                continue
+            if 0 <= days_left <= 2:
+                warnings.append({"ticker": ticker, "days_to_expiration": days_left})
+                pos["expiration_warned"] = True
+        if warnings:
+            self._persist()
+        return warnings
+
+    def check_position_health(self, current_date: str) -> list[dict]:
+        """Returns alerts for positions exhibiting the two exit failures visible in this
+        account's trade history: holding a long option past the point where the edge
+        historically inverts, and riding a losing contract down instead of cutting it.
+
+        Each alert fires at most once per position per day (reset_daily clears the flags).
+        Returns a list of {ticker, reason, days_held, est_option_pnl_pct, detail}.
+        """
+        alerts = []
+        for ticker, pos in self.active_positions.items():
+            held = self.days_held(pos, current_date)
+
+            # Only value the position when a recent tick backs the price. A rotated-out
+            # ticker stops streaming, and a stop fired on a days-old price is worse than
+            # no stop at all.
+            est = None
+            if self._price_is_fresh(pos):
+                est = self._estimate_option_pnl(pos, pos.get("last_price", pos["entry_price"]), current_date)
+            elif pos.get("option_entry_price"):
+                log.warning(f"[{ticker}] Position not valued this sweep: no tick within "
+                            f"{PRICE_STALE_AFTER_SECONDS}s. Premium stop cannot evaluate.")
+
+            if held is not None and held >= self.max_hold_days and not pos.get("time_stop_warned"):
+                pos["time_stop_warned"] = True
+                alerts.append({
+                    "ticker": ticker,
+                    "reason": "TIME_STOP",
+                    "days_held": held,
+                    "est_option_pnl_pct": est,
+                    "detail": (f"held {held} day(s), past the {self.max_hold_days}-day mark where this "
+                               f"account's win rate historically drops from ~50% to 27%"),
+                })
+
+            if est is not None and est <= self.premium_stop_pct and not pos.get("premium_stop_warned"):
+                pos["premium_stop_warned"] = True
+                alerts.append({
+                    "ticker": ticker,
+                    "reason": "PREMIUM_STOP",
+                    "days_held": held,
+                    "est_option_pnl_pct": est,
+                    "detail": (f"estimated premium down {est*100:.0f}%, past the "
+                               f"{self.premium_stop_pct*100:.0f}% line"),
+                })
+
+        if alerts:
+            self._persist()
+        return alerts
+
+    def reset_daily(self, current_date: str = None):
+        """Clears stale intraday runners so they do not leak into the next trading day.
+
+        Positions holding an option that has NOT yet expired are deliberately kept: the
+        contracts are 14-21 DTE instruments, and wiping them every morning is precisely
+        what let 21 positions expire worthless with nobody watching. Kept positions have
+        their expiration_warned flag cleared so they can warn again today.
+
+        Dropped: positions with no option expiration (pure intraday runners, the original
+        behaviour) and positions whose option has already expired.
+
+        Without current_date the original clear-everything behaviour applies, so callers
+        that have no notion of "today" are unaffected.
+        """
+        if current_date is None:
+            self.active_positions.clear()
+            self._persist()
+            return
+
+        kept = {}
+        for ticker, pos in self.active_positions.items():
+            days_left = self._days_to_expiration(pos, current_date)
+            if days_left is None:
+                if pos.get("option_expiration"):
+                    # Recorded but unreadable. Dropping it here would abandon a real open
+                    # contract silently -- exactly the failure this feature exists to stop.
+                    log.error(
+                        f"[{ticker}] KEEPING position across the reset: expiration "
+                        f"{pos.get('option_expiration')!r} could not be parsed. Expiration warnings "
+                        f"cannot fire for it until the date is fixed."
+                    )
+                    pos["expiration_warned"] = False
+                    pos["time_stop_warned"] = False
+                    pos["premium_stop_warned"] = False
+                    kept[ticker] = pos
+                else:
+                    log.info(f"[{ticker}] Intraday position cleared by daily reset (no option expiration tracked).")
+                continue
+            if days_left < 0:
+                log.info(f"[{ticker}] Position dropped: option expired on {pos.get('option_expiration')}.")
+                continue
+            pos["expiration_warned"] = False
+            pos["time_stop_warned"] = False
+            pos["premium_stop_warned"] = False
+            kept[ticker] = pos
+
+        dropped = len(self.active_positions) - len(kept)
+        self.active_positions = kept
+        self._persist()
+        if kept:
+            log.info(
+                f"🔄 [DAILY RESET] Cleared {dropped} intraday/expired position(s); "
+                f"carrying {len(kept)} live option position(s) forward: {', '.join(sorted(kept))}"
+            )
 
