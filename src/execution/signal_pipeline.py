@@ -1,9 +1,23 @@
 import logging
+import os
 from datetime import datetime
 from typing import Dict, Any
 from src.models.signal import TradeSignal
 from src.data.earnings_calendar import EarningsCalendar
 from src.backtest.stats_reader import BacktestStatsReader
+
+# When the daily ATR cache is cold, size the setup as a share of price rather than a flat
+# dollar amount. A fixed $1.50 makes expected_move_pct a function of share price: 26% on a
+# $10 stock, 0.5% on a $500 one, so the Velocity Gate ends up filtering on price instead of
+# volatility. The ATR exhaustion check below already uses this same 3.5% convention.
+# Configurable, because it decides what happens when the bot has no measurement. Set it
+# low and cold-cache signals are held back; set it high and they all pass. The real fix is
+# a warm cache -- the hourly Donchian scan measures ATR properly -- so treat this as the
+# behaviour during the startup window and after a scan failure, not as a tuning knob.
+try:
+    FALLBACK_ATR_PCT = float(os.getenv("FALLBACK_ATR_PCT", "0.035"))
+except ValueError:
+    FALLBACK_ATR_PCT = 0.035
 
 log = logging.getLogger("rallyhunter.pipeline")
 
@@ -107,10 +121,12 @@ class SignalPipeline:
                 import logging
                 # Fires once per signal. The engine already reports the missing cache
                 # per ticker, so this is the detail line rather than the alarm.
+                fallback_atr = float(signal["entry_price"]) * FALLBACK_ATR_PCT
                 logging.getLogger("rallyhunter.pipeline").info(
-                    f"[{ticker}] No cached daily ATR; sizing the setup with ATR=1.5.")
+                    f"[{ticker}] No cached daily ATR; sizing the setup at "
+                    f"{FALLBACK_ATR_PCT*100:.1f}% of price (ATR={fallback_atr:.2f}).")
                 risk_levels = self.risk_manager.add_position(
-                    ticker, signal["entry_price"], initial_atr=1.5, 
+                    ticker, signal["entry_price"], initial_atr=fallback_atr, 
                     direction=signal["direction"], invalidation_level=invalidation_level,
                     catalyst_type=cat_type
                 )
@@ -120,7 +136,7 @@ class SignalPipeline:
         entry_p = float(signal["entry_price"])
         hod = float(signal.get("hod", entry_p))
         lod = float(signal.get("lod", entry_p))
-        atr_ref = cached_atr if (cached_atr and not pd.isna(cached_atr)) else (entry_p * 0.035)
+        atr_ref = cached_atr if (cached_atr and not pd.isna(cached_atr)) else (entry_p * FALLBACK_ATR_PCT)
         
         if atr_ref > 0:
             if direction == "Long":

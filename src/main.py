@@ -408,14 +408,19 @@ class IntradayEngine:
                         if cached_atr and not pd.isna(cached_atr):
                             current_atr = cached_atr
                         else:
+                            # Same reasoning as the pipeline: a flat dollar ATR makes the
+                            # trailing stop far too tight on cheap stocks and far too loose
+                            # on expensive ones.
+                            from src.execution.signal_pipeline import FALLBACK_ATR_PCT
+                            current_atr = price * FALLBACK_ATR_PCT
                             if ticker not in self._atr_warned:
                                 self._atr_warned.add(ticker)
                                 log.warning(
                                     f"[{ticker}] No cached daily ATR for the trailing stop; "
-                                    f"using ATR=1.5 until the hourly Donchian scan caches one. "
-                                    f"Logged once per ticker per day."
+                                    f"using {FALLBACK_ATR_PCT*100:.1f}% of price "
+                                    f"(ATR={current_atr:.2f}) until the hourly Donchian scan "
+                                    f"caches one. Logged once per ticker per day."
                                 )
-                            current_atr = 1.5
                             
                         direction = self.risk_manager.active_positions[ticker]["direction"]
                         outcome = self.risk_manager.update_trailing_stop(ticker, price, current_atr, direction)
