@@ -1,5 +1,6 @@
 import os
 import logging
+from datetime import datetime
 from typing import Dict, Optional, Any
 import numpy as np
 
@@ -205,7 +206,10 @@ class MomentumMoversStrategy:
             "z_vol": float(z_vol),
             "rsi": float(rsi),
             "vwap": float(vwap),
-            "strategy": "MOMENTUM_MOVERS"
+            "strategy": "MOMENTUM_MOVERS",
+            # Every other strategy emits this; the pipeline journals it as the alert
+            # time. Omitting it left the momentum alerts with a substituted time.
+            "timestamp": datetime.now(),
         }
 
     @staticmethod

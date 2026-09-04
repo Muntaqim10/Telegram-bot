@@ -455,13 +455,23 @@ class SignalPipeline:
                     early_surge_desc = f"MID-CAP SURGE (+{expected_move_pct:.1f}%)"
                     log.info(f"🚨 [{ticker}] HIGH ALERT: Early Morning {early_surge_desc}")
 
+        # Not every strategy emits a timestamp -- momentum_movers does not. This was a
+        # bare signal["timestamp"] subscript, which raised KeyError here: after the
+        # position had been registered and before the alert was dispatched. The caller
+        # in main.py catches every exception and logs one line, so the alert was lost
+        # silently and the speculative position was never removed. Measured over one
+        # session: 49 tickers hit it and 24 positions were left behind.
+        signal_ts = signal.get("timestamp") or datetime.now()
+        signal_ts = (signal_ts.strftime("%Y-%m-%d %H:%M:%S")
+                     if hasattr(signal_ts, "strftime") else str(signal_ts))
+
         # 5. Build TradeSignal Object
         trade_signal = TradeSignal(
             ticker=ticker,
             price=signal["entry_price"],
             signal_direction=signal["direction"],
             strategy_type=signal["catalyst_type"],
-            timestamp=signal["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if hasattr(signal["timestamp"], "strftime") else str(signal["timestamp"]),
+            timestamp=signal_ts,
             is_whale=is_whale or pricing_data.get("is_whale", False),
             win_probability=xgb_result['win_prob'],
             xgb_win_prob=xgb_result['win_prob'],
