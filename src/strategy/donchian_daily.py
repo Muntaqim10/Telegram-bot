@@ -43,7 +43,13 @@ class DonchianSwingStrategy:
     # atr_cache and feature_cache are populated after that call, so both stayed empty all
     # session -- every alert was marked UNSCORED and every trailing stop used the fallback
     # ATR. 120 calendar days is ~84 bars, leaving headroom for holidays.
-    DEFAULT_LOOKBACK_DAYS = 120
+    # Raised again for key_levels, which resamples these same bars into weekly and monthly
+    # periods. The bar cache is keyed on ticker alone, so one window has to serve both:
+    # 120 days is only ~4 monthly periods, too few to call a prior-month level reliable.
+    # 400 calendar days is ~275 bars -- 13 months, 57 weeks -- and stays one cached call
+    # per ticker per 6 hours. The daily indicators are all rolling(<=60), so the extra
+    # history changes none of their values.
+    DEFAULT_LOOKBACK_DAYS = 400
 
     async def fetch_daily_bars(self, session: aiohttp.ClientSession, ticker: str,
                                lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> pd.DataFrame:
