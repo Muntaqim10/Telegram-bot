@@ -21,7 +21,19 @@ DEFAULT_STATE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..
 #   hold 2-5 days-> 44% win rate,  +6.1% avg return, +$6,077 net
 #   hold 6+ days -> 27% win rate, -20.7% avg return, -$1,987 net   <-- the leak
 # and 69 closed contracts were sold only after losing 50-99% of premium.
-DEFAULT_MAX_HOLD_DAYS = 5
+#
+# Re-measured on 289 closed contracts using the median rather than the mean, because a
+# handful of large winners carry the average and hide where the typical trade ends up:
+#   hold 1 day   -> median   +$6.5
+#   hold 3 days  -> median  +$12.8
+#   hold 4-5 days-> median  -$41.1     <-- the typical trade is already losing here
+#   hold 6-10    -> median  -$55.1
+#   hold 11+     -> median  -$83.0
+# Crossed against DTE, holding is the variable that matters and DTE is not: inside a
+# 0-1 day hold every DTE bucket wins 50-55%, and at 4+ days every DTE bucket has a
+# negative median (2-5 DTE -$92, 6-13 -$12, 14-21 -$132, 22+ -$44). So the ceiling
+# moves to 3 rather than the window widening.
+DEFAULT_MAX_HOLD_DAYS = 3
 DEFAULT_PREMIUM_STOP_PCT = -0.50
 
 # What happens when the take-profit target is reached.

@@ -37,7 +37,16 @@ class DonchianSwingStrategy:
         self._bar_cache = {}  # ticker -> {"df": DataFrame, "fetched_at": datetime}
         self._warmup_logged = False
 
-    async def fetch_daily_bars(self, session: aiohttp.ClientSession, ticker: str, lookback_days: int = 80) -> pd.DataFrame:
+    # Calendar days, not trading days. compute_indicators() needs 60 bars for SMA_60 and
+    # returns an empty frame below that, so the window has to clear 60 *trading* days:
+    # 80 calendar days is ~57 bars, which failed the guard for every ticker on every scan.
+    # atr_cache and feature_cache are populated after that call, so both stayed empty all
+    # session -- every alert was marked UNSCORED and every trailing stop used the fallback
+    # ATR. 120 calendar days is ~84 bars, leaving headroom for holidays.
+    DEFAULT_LOOKBACK_DAYS = 120
+
+    async def fetch_daily_bars(self, session: aiohttp.ClientSession, ticker: str,
+                               lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> pd.DataFrame:
         """Fetch daily OHLCV bars from Tradier."""
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo("US/Eastern"))
