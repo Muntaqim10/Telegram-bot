@@ -19,6 +19,11 @@ try:
 except ValueError:
     FALLBACK_ATR_PCT = 0.035
 
+# On by default, unlike the other switches here. The others change how the bot trades;
+# this one stops it buying a long option over an earnings print, which is a structural
+# loss rather than a preference. EARNINGS_GATE=off restores the old behaviour.
+EARNINGS_GATE = os.getenv("EARNINGS_GATE", "on").strip().lower() not in ("0", "off", "false", "no")
+
 log = logging.getLogger("rallyhunter.pipeline")
 
 class SignalPipeline:
@@ -303,11 +308,38 @@ class SignalPipeline:
             try:
                 earnings_dt = datetime.strptime(next_earnings, "%Y-%m-%d").date()
                 expiration_dt = datetime.strptime(expiration, "%Y-%m-%d").date()
-                today_dt = datetime.now().date()
+                # Market time, not host time: a signal built in the evening on a UTC host
+                # lands a day ahead and can decide an earnings print is already behind it.
+                today_dt = datetime.strptime(self.risk_manager.market_today(), "%Y-%m-%d").date()
                 earnings_in_window = today_dt <= earnings_dt <= expiration_dt
             except ValueError:
                 earnings_in_window = False
-        
+
+        # Earnings gate. This value was computed and then used only as a label on the
+        # alert, so the bot would happily propose a long option over an earnings print.
+        # On 2026-09-03 at 15:45 it produced a LULU call breakout at $121.31, fifteen
+        # minutes before that print; LULU opened the next morning near $99. Nothing about
+        # earnings stopped it -- the Velocity Gate happened to reject it on an unrelated
+        # volatility threshold, and the same setup had been saved by the Exhaustion Gate
+        # six days earlier.
+        #
+        # Buying a long option over a print is the worst structure available here: the gap
+        # is unpredictable in direction and IV is at its peak on the day you pay for it,
+        # so the crush works against you even when the direction is right.
+        #
+        # Fails OPEN. The calendar does not know every ticker -- AAPL returns no date at
+        # all -- and blocking every unknown would silence most alerts. This reduces the
+        # exposure rather than removing it.
+        if earnings_in_window and EARNINGS_GATE:
+            log.warning(
+                f"[{ticker}] Alert BLOCKED by Earnings Gate: {next_earnings} falls inside "
+                f"the contract's life (expiry {expiration}). A long option over a print "
+                f"pays peak IV for an unpredictable gap. Set EARNINGS_GATE=off to allow."
+            )
+            self.risk_manager.remove_position(ticker)
+            return
+
+
         last_earnings = await self.earnings_calendar.get_last_earnings_date(ticker, session=session)
         days_since = self.earnings_calendar.days_since_earnings(last_earnings)
 
