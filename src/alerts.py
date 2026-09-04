@@ -91,12 +91,10 @@ class AlertGateway:
         if not lines:
             return None
 
-        # These counters come from record_outcome(), which is called for every position
-        # the trailing stop closes -- and every alert registers a position whether or not
-        # the trader took it. So this is the simulated trailing stop's record, not the
-        # account's: 249 of these "closures" were contracts nobody ever bought. Labelled
-        # rather than removed, because the simulation is still the only per-catalyst
-        # signal that exists; what was wrong was presenting it as a track record.
+        # record_outcome() counts every position the trailing stop closes, and most were
+        # never traded -- see CLAUDE.md, position lifecycle. Labelled rather than removed:
+        # the simulation is the only per-catalyst signal there is, and what was wrong was
+        # presenting it as a track record.
         header = ("🎯 <b>Catalyst Reliability</b> <i>(simulated trailing stop, not "
                   "trades taken)</i>\n")
         return header + "\n".join(lines)

@@ -223,7 +223,17 @@ class IntradayEngine:
     async def _dispatch_exit_alert(self, ticker: str, pos: dict, outcome: dict) -> None:
         """Tells the trader to act. Entry alerts were always dispatched; exits were only
         written to a CSV, which meant the bot said when to get in and never when to get
-        out -- the failure the whole exit-discipline effort exists to fix."""
+        out -- the failure the whole exit-discipline effort exists to fix.
+
+        Only real holdings. Every alert registers a speculative position and the trailing
+        stop runs on all of them, so an ungated exit congratulates the trader on a
+        contract they never bought. The rule lives here rather than at the call sites
+        because it was written at one of two and the sibling branch went a whole release
+        without it -- a third caller would repeat the mistake. See CLAUDE.md, position
+        lifecycle."""
+        if not pos.get("confirmed"):
+            return
+
         status = outcome["status"]
         price = outcome.get("exit_price", 0.0)
         stock_pnl = outcome.get("pnl")
@@ -416,17 +426,13 @@ class IntradayEngine:
                         
                         if outcome["status"] == "TP_HIT_TRAILING":
                             # Target reached but the position stays open on a tighter
-                            # trail, so the move is allowed to keep going.
-                            #
-                            # Gated on /took like the exit branch below. Every alert
-                            # registers a speculative position and the trailing stop runs
-                            # on all of them, so without this the bot congratulates the
-                            # trader on a target hit for a contract they never bought.
-                            if pos.get("confirmed"):
-                                asyncio.create_task(self._dispatch_exit_alert(ticker, pos, outcome))
+                            # trail, so the move is allowed to keep going. _dispatch_exit_alert
+                            # drops it if the trader never confirmed the position.
+                            asyncio.create_task(self._dispatch_exit_alert(ticker, pos, outcome))
 
                         elif outcome["status"] in ("STOPPED_OUT", "TP_HIT", "INVALIDATED", "RUNNER_STOPPED"):
-                            confirmed = bool(pos.get("confirmed"))
+                            # close_trade pops the position, but `pos` is the reference
+                            # taken above, so the confirmed flag survives for the dispatch.
                             self.risk_manager.close_trade(
                                 ticker=ticker,
                                 outcome_status=outcome["status"],
@@ -435,10 +441,8 @@ class IntradayEngine:
                                 estimated_option_pnl_pct=outcome.get("estimated_option_pnl_pct")
                             )
                             self.alerts.record_outcome(catalyst_type=catalyst_type, outcome_status=outcome["status"])
-                            # An alerter that never signals the exit is half a tool. Only
-                            # for positions actually held -- see the /took ledger.
-                            if confirmed:
-                                asyncio.create_task(self._dispatch_exit_alert(ticker, pos, outcome))
+                            # An alerter that never signals the exit is half a tool.
+                            asyncio.create_task(self._dispatch_exit_alert(ticker, pos, outcome))
 
                     # 1. Process Tick in Strategy
                     now = pd.Timestamp.now(tz="US/Eastern")  # Cache once per tick

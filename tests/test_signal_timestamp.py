@@ -17,6 +17,7 @@ from datetime import datetime
 
 import pytest
 
+from src.execution.signal_pipeline import format_signal_timestamp
 from src.strategy.momentum_movers import MomentumMoversStrategy
 
 
@@ -36,10 +37,9 @@ def momentum_signal(**overrides):
     return signal
 
 
-def format_timestamp(signal):
-    """The coercion signal_pipeline applies when building the TradeSignal."""
-    value = signal.get("timestamp") or datetime.now()
-    return value.strftime("%Y-%m-%d %H:%M:%S") if hasattr(value, "strftime") else str(value)
+# The shipped coercion, not a copy of it. These tests used to assert against a local
+# reimplementation, which is why proving the bare subscript was gone needed a source grep.
+format_timestamp = format_signal_timestamp
 
 
 class TestTheProducer:
@@ -55,17 +55,13 @@ class TestTheProducer:
         """A new strategy omitting this is the exact bug that lost 49 tickers."""
         import inspect
 
-        from src.strategy import donchian_daily, extended_hours_scanner, orb_intraday
+        from src.strategy import (donchian_daily, extended_hours_scanner, momentum_movers,
+                                  orb_intraday)
 
-        for module in (momentum_movers_module(), donchian_daily,
-                       extended_hours_scanner, orb_intraday):
+        for module in (momentum_movers, donchian_daily, extended_hours_scanner,
+                       orb_intraday):
             source = inspect.getsource(module)
             assert '"timestamp"' in source, f"{module.__name__} emits no timestamp"
-
-
-def momentum_movers_module():
-    from src.strategy import momentum_movers
-    return momentum_movers
 
 
 class TestTheConsumer:
@@ -98,15 +94,8 @@ class TestTheConsumer:
                           "%Y-%m-%d %H:%M:%S")
 
 
-class TestTheSubscriptIsGone:
-    def test_the_pipeline_no_longer_subscripts_timestamp(self):
-        """Guards the specific line. `.get()` is the convention everywhere else here."""
-        import inspect
-
-        from src.execution import signal_pipeline
-
-        # Comments quote the old line deliberately, so judge the code alone.
-        code = [line for line in inspect.getsource(signal_pipeline).splitlines()
-                if not line.lstrip().startswith("#")]
-        assert 'signal["timestamp"]' not in "\n".join(code), \
-            "a bare subscript here loses the alert and strands the position"
+# TestTheSubscriptIsGone lived here: a grep of the pipeline source proving the bare
+# subscript was gone. It existed only because the coercion was unreachable from a test.
+# Now that TestTheConsumer calls format_signal_timestamp directly, the behaviour it was
+# approximating is covered properly, and a source grep that also matches its own
+# docstring is worse than no test.

@@ -81,17 +81,23 @@ class TestTheConfiguredWindow:
             DonchianSwingStrategy.DEFAULT_LOOKBACK_DAYS
 
 
-class TestTheFeaturesTheModelScores:
-    """The three the sentinel needs; see the model-honesty rules in CLAUDE.md."""
+class TestTheCachesTheWindowFeeds:
+    """What the lookback fix actually unblocked.
 
-    @pytest.mark.parametrize("feature", ["sma_spread", "sma20_ratio", "rsi_14"])
-    def test_extract_returns_it(self, feature):
-        df = DonchianSwingStrategy.compute_indicators(bars(90))
-        assert feature in DonchianSwingStrategy().extract_model_features(df)
+    The extractor's own contract -- which features it returns, and that it refuses an
+    unusable frame -- is covered by TestDailyFeatures in test_model_honesty.py. This
+    only asserts the link that was broken: a frame built from the configured window
+    survives the warm-up guard and yields usable values for both caches.
+    """
 
-    def test_values_are_real_numbers_not_defaults(self):
-        """Scoring constants is what made every intraday alert land on two numbers."""
-        df = DonchianSwingStrategy.compute_indicators(bars(90))
-        feats = DonchianSwingStrategy().extract_model_features(df)
+    def test_a_frame_from_the_configured_window_populates_both_caches(self):
+        bars_in_window = int(DonchianSwingStrategy.DEFAULT_LOOKBACK_DAYS * TRADING_DAY_RATIO)
+        df = DonchianSwingStrategy.compute_indicators(bars(bars_in_window))
+        assert not df.empty, "the window no longer clears the warm-up guard"
+
+        atr = df["ATR_14"].iloc[-1]          # what atr_cache stores
+        feats = DonchianSwingStrategy().extract_model_features(df)  # what feature_cache stores
+        assert not pd.isna(atr)
+        assert feats is not None
         for name, value in feats.items():
             assert value is not None and not pd.isna(value), f"{name} is unusable"

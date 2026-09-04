@@ -27,7 +27,6 @@ daily model features ride along on the same frame -- these alerts arrive scored 
 than UNSCORED.
 """
 import logging
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -58,11 +57,7 @@ LEVEL_PRECEDENCE = ("month", "week", "day")
 class KeyLevelStrategy:
     """Detects breaks of, and rejections at, the prior D/W/M highs and lows."""
 
-    def __init__(self, donchian_strategy=None):
-        # Reuses the Donchian bar cache rather than fetching its own. That strategy is
-        # kept for exactly this reason: it is the daily-data feed the rest of the engine
-        # depends on for ATR and the model features.
-        self.donchian = donchian_strategy
+    def __init__(self):
         self._fired_today: Dict[str, set] = {}
 
     # ---------------------------------------------------------------- levels
@@ -82,7 +77,10 @@ class KeyLevelStrategy:
         prev_day = daily.iloc[-2]
         out["day"] = {"high": float(prev_day["high"]), "low": float(prev_day["low"])}
 
-        for name, rule in (("week", "W"), ("month", "ME")):
+        # W-FRI, not the pandas default W-SUN: timeframe_confluence already resamples
+        # these same daily bars on a Friday boundary, and two week definitions in one
+        # alert would put "prior week high" and the weekly trend on different weeks.
+        for name, rule in (("week", "W-FRI"), ("month", "ME")):
             periods = daily.resample(rule).agg({"high": "max", "low": "min"}).dropna()
             if len(periods) >= 2:
                 prior = periods.iloc[-2]
@@ -124,31 +122,33 @@ class KeyLevelStrategy:
             high = levels[timeframe]["high"]
             low = levels[timeframe]["low"]
 
-            # BREAK: closed clear of the level, but not so far past it that the move has
-            # already happened. Both bounds matter -- see MAX_EXTENSION_ATR.
-            if high + break_buf < price <= high + max_ext:
-                return [self._signal(ticker, "Long", price, timeframe, "BREAK",
-                                     "high", high, session_high, session_low, features)]
-            if low - max_ext <= price < low - break_buf:
-                return [self._signal(ticker, "Short", price, timeframe, "BREAK",
-                                     "low", low, session_high, session_low, features)]
-
-            # REJECT: reached the level today, then closed back inside it.
-            if session_high >= high and price < high - reject_buf:
-                return [self._signal(ticker, "Short", price, timeframe, "REJECT",
-                                     "high", high, session_high, session_low, features)]
-            if session_low <= low and price > low + reject_buf:
-                return [self._signal(ticker, "Long", price, timeframe, "REJECT",
-                                     "low", low, session_high, session_low, features)]
+            # Four triggers per timeframe, tried in this order. A BREAK is a close clear
+            # of the level but not so far past it that the move has already happened --
+            # both bounds matter, see MAX_EXTENSION_ATR. A REJECT is price reaching the
+            # level today and closing back inside it.
+            for condition, direction, trigger, side, level in (
+                (high + break_buf < price <= high + max_ext, "Long", "BREAK", "high", high),
+                (low - max_ext <= price < low - break_buf, "Short", "BREAK", "low", low),
+                (session_high >= high and price < high - reject_buf, "Short", "REJECT", "high", high),
+                (session_low <= low and price > low + reject_buf, "Long", "REJECT", "low", low),
+            ):
+                if condition:
+                    return [self._signal(
+                        ticker, price, timeframe, session_high, session_low, features,
+                        direction=direction, trigger=trigger, side=side, level=level)]
 
         return []
 
     # ---------------------------------------------------------------- signal
 
     @staticmethod
-    def _signal(ticker, direction, price, timeframe, trigger, side, level,
-                session_high, session_low, features) -> Dict[str, Any]:
-        """One alert type. Timeframe, level and trigger are fields, not headlines."""
+    def _signal(ticker, price, timeframe, session_high, session_low, features,
+                *, direction, trigger, side, level) -> Dict[str, Any]:
+        """One alert type. Timeframe, level and trigger are fields, not headlines.
+
+        The four discriminating arguments are keyword-only: they are three adjacent
+        strings and a float, so a transposition would otherwise be invisible.
+        """
         label = {"day": "Prior Day", "week": "Prior Week", "month": "Prior Month"}[timeframe]
         arrow = "↑" if direction == "Long" else "↓"
 
@@ -169,7 +169,10 @@ class KeyLevelStrategy:
             # The Exhaustion Gate measures how much of the daily range is already spent.
             "hod": float(session_high),
             "lod": float(session_low),
-            "timestamp": datetime.now(),
+            # Market time. The pipeline reads .hour off this for the early-surge window
+            # and journals it as the alert time, so a naive host clock would drift the
+            # window and the recorded date on a UTC box.
+            "timestamp": pd.Timestamp.now(tz="US/Eastern"),
             "tf_confluence": f"{label} {side} {arrow} {trigger}",
         }
         # Daily model features ride along on the frame we already have, so these alerts

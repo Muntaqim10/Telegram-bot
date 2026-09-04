@@ -7,6 +7,18 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
+
+def market_today_date() -> date:
+    """Today in market time, as a date.
+
+    Every date in this system is US/Eastern so that entry dates, hold counts and
+    expiration checks cannot disagree on a UTC host -- see RiskManager.market_today().
+    date.today() is host time, which on a UTC box rolls over five hours early and makes
+    an evening signal believe a print is already behind it.
+    """
+    import pandas as pd
+    return pd.Timestamp.now(tz="US/Eastern").date()
+
 class EarningsCalendar:
     """
     Fetches the next upcoming earnings date for a given ticker using the Finnhub API.
@@ -127,8 +139,7 @@ class EarningsCalendar:
             
         try:
             target_date = datetime.strptime(next_earnings_date, "%Y-%m-%d").date()
-            today = date.today()
-            delta = target_date - today
+            delta = target_date - market_today_date()
             return delta.days
         except ValueError:
             return None
@@ -139,14 +150,36 @@ class EarningsCalendar:
         """
         if not last_earnings_date:
             return None
-            
+
         try:
             target_date = datetime.strptime(last_earnings_date, "%Y-%m-%d").date()
-            today = date.today()
-            delta = today - target_date
+            delta = market_today_date() - target_date
             return delta.days
         except ValueError:
             return None
+
+    @staticmethod
+    def earnings_in_window(next_earnings: Optional[str], expiration: Optional[str],
+                           today: Optional[str] = None) -> bool:
+        """Does a known earnings date fall inside the contract's life?
+
+        Fails open. The calendar does not know every ticker -- AAPL returns no date at
+        all -- so an absent or unparseable date is "no known print", not "safe". Blocking
+        every unknown would silence most alerts.
+
+        Lives here rather than in the pipeline so the rule has one definition: the
+        callers were a gate and a test asserting against its own copy of the comparison.
+        """
+        if not next_earnings or not expiration:
+            return False
+        try:
+            earnings_dt = datetime.strptime(next_earnings, "%Y-%m-%d").date()
+            expiration_dt = datetime.strptime(expiration, "%Y-%m-%d").date()
+            today_dt = (datetime.strptime(today, "%Y-%m-%d").date() if today
+                        else market_today_date())
+        except (ValueError, TypeError):
+            return False
+        return today_dt <= earnings_dt <= expiration_dt
 
 if __name__ == "__main__":
     from dotenv import load_dotenv

@@ -1,6 +1,7 @@
 import os
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Dict, Optional, Any
 import numpy as np
 
@@ -209,7 +210,7 @@ class MomentumMoversStrategy:
             "strategy": "MOMENTUM_MOVERS",
             # Every other strategy emits this; the pipeline journals it as the alert
             # time. Omitting it left the momentum alerts with a substituted time.
-            "timestamp": datetime.now(),
+            "timestamp": datetime.now(ZoneInfo("US/Eastern")),
         }
 
     @staticmethod

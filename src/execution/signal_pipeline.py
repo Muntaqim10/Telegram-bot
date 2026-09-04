@@ -2,6 +2,9 @@ import logging
 import os
 from datetime import datetime
 from typing import Dict, Any
+
+import pandas as pd
+
 from src.models.signal import TradeSignal
 from src.data.earnings_calendar import EarningsCalendar
 from src.backtest.stats_reader import BacktestStatsReader
@@ -23,6 +26,22 @@ except ValueError:
 # this one stops it buying a long option over an earnings print, which is a structural
 # loss rather than a preference. EARNINGS_GATE=off restores the old behaviour.
 EARNINGS_GATE = os.getenv("EARNINGS_GATE", "on").strip().lower() not in ("0", "off", "false", "no")
+
+
+def format_signal_timestamp(signal: Dict[str, Any]) -> str:
+    """The alert time, as trade_log records it.
+
+    A strategy may omit the key: momentum_movers did, and this was a bare
+    signal["timestamp"] subscript, so it raised KeyError after add_position() had
+    registered the position and before the alert was dispatched. main.py catches every
+    exception and logs one line, so the alert vanished and the speculative position was
+    never removed -- 49 tickers in one session, 24 positions left behind.
+
+    Module-level and importable so the tests exercise this rather than a copy of it.
+    """
+    value = signal.get("timestamp") or pd.Timestamp.now(tz="US/Eastern")
+    return (value.strftime("%Y-%m-%d %H:%M:%S")
+            if hasattr(value, "strftime") else str(value))
 
 log = logging.getLogger("rallyhunter.pipeline")
 
@@ -261,6 +280,30 @@ class SignalPipeline:
         expiration = await self.options_pricer.get_target_expiration(ticker, session=session)
         target_strike = float(round(signal["entry_price"])) # Spot reference (OptionsPricer optimizes to ~0.75 Delta ITM)
 
+        # 4.05 Earnings gate. Placed here, directly after the expiration is known and
+        # before the confluence triad, because everything below it is expensive: the
+        # confluence call alone fetches 250 days of daily bars, and the option chain,
+        # GEX profile and LLM synthesis follow. The gate needs only the expiration.
+        #
+        # This value used to be computed thirty lines further down and used only as a
+        # label on the alert, so the bot would propose a long option over an earnings
+        # print. On 2026-09-03 at 15:45 it produced a LULU call breakout at $121.31,
+        # fifteen minutes before that print; LULU opened the next morning near $99. The
+        # Velocity Gate happened to reject it on an unrelated volatility threshold.
+        #
+        # Fails open: see EarningsCalendar.earnings_in_window.
+        next_earnings = await self.earnings_calendar.get_next_earnings_date(ticker, session=session)
+        earnings_in_window = self.earnings_calendar.earnings_in_window(
+            next_earnings, expiration, self.risk_manager.market_today())
+        if earnings_in_window and EARNINGS_GATE:
+            log.warning(
+                f"[{ticker}] Alert BLOCKED by Earnings Gate: {next_earnings} falls inside "
+                f"the contract's life (expiry {expiration}). A long option over a print "
+                f"pays peak IV for an unpredictable gap. Set EARNINGS_GATE=off to allow."
+            )
+            self.risk_manager.remove_position(ticker)
+            return
+
         # 4.1 Evaluate Multi-Timeframe Triad Confluence (Weekly/Daily/4H for Weeklies vs Daily/4H/1H for 3-Day)
         try:
             exp_dt = datetime.strptime(expiration, "%Y-%m-%d").date()
@@ -301,44 +344,6 @@ class SignalPipeline:
             log.warning(f"[{ticker}] Timeframe confluence data quality warning flagged. Appending note to alert.")
 
         opt_type = "put" if direction == "Short" else "call"
-
-        next_earnings = await self.earnings_calendar.get_next_earnings_date(ticker, session=session)
-        earnings_in_window = False
-        if next_earnings:
-            try:
-                earnings_dt = datetime.strptime(next_earnings, "%Y-%m-%d").date()
-                expiration_dt = datetime.strptime(expiration, "%Y-%m-%d").date()
-                # Market time, not host time: a signal built in the evening on a UTC host
-                # lands a day ahead and can decide an earnings print is already behind it.
-                today_dt = datetime.strptime(self.risk_manager.market_today(), "%Y-%m-%d").date()
-                earnings_in_window = today_dt <= earnings_dt <= expiration_dt
-            except ValueError:
-                earnings_in_window = False
-
-        # Earnings gate. This value was computed and then used only as a label on the
-        # alert, so the bot would happily propose a long option over an earnings print.
-        # On 2026-09-03 at 15:45 it produced a LULU call breakout at $121.31, fifteen
-        # minutes before that print; LULU opened the next morning near $99. Nothing about
-        # earnings stopped it -- the Velocity Gate happened to reject it on an unrelated
-        # volatility threshold, and the same setup had been saved by the Exhaustion Gate
-        # six days earlier.
-        #
-        # Buying a long option over a print is the worst structure available here: the gap
-        # is unpredictable in direction and IV is at its peak on the day you pay for it,
-        # so the crush works against you even when the direction is right.
-        #
-        # Fails OPEN. The calendar does not know every ticker -- AAPL returns no date at
-        # all -- and blocking every unknown would silence most alerts. This reduces the
-        # exposure rather than removing it.
-        if earnings_in_window and EARNINGS_GATE:
-            log.warning(
-                f"[{ticker}] Alert BLOCKED by Earnings Gate: {next_earnings} falls inside "
-                f"the contract's life (expiry {expiration}). A long option over a print "
-                f"pays peak IV for an unpredictable gap. Set EARNINGS_GATE=off to allow."
-            )
-            self.risk_manager.remove_position(ticker)
-            return
-
 
         last_earnings = await self.earnings_calendar.get_last_earnings_date(ticker, session=session)
         days_since = self.earnings_calendar.days_since_earnings(last_earnings)
@@ -487,15 +492,7 @@ class SignalPipeline:
                     early_surge_desc = f"MID-CAP SURGE (+{expected_move_pct:.1f}%)"
                     log.info(f"🚨 [{ticker}] HIGH ALERT: Early Morning {early_surge_desc}")
 
-        # Not every strategy emits a timestamp -- momentum_movers does not. This was a
-        # bare signal["timestamp"] subscript, which raised KeyError here: after the
-        # position had been registered and before the alert was dispatched. The caller
-        # in main.py catches every exception and logs one line, so the alert was lost
-        # silently and the speculative position was never removed. Measured over one
-        # session: 49 tickers hit it and 24 positions were left behind.
-        signal_ts = signal.get("timestamp") or datetime.now()
-        signal_ts = (signal_ts.strftime("%Y-%m-%d %H:%M:%S")
-                     if hasattr(signal_ts, "strftime") else str(signal_ts))
+        signal_ts = format_signal_timestamp(signal)
 
         # 5. Build TradeSignal Object
         trade_signal = TradeSignal(
