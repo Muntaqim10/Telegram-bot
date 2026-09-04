@@ -85,13 +85,20 @@ class AlertGateway:
                 win_rate = (tp / total_decided) * 100.0
                 clean_cat = cat.replace("🔥 ", "").replace("🔄 ", "").replace("🔺 ", "").replace("🔻 ", "").replace("🟢 ", "").replace("🔴 ", "")
                 lines.append(
-                    f"  • <b>{clean_cat}</b>: <code>{win_rate:.0f}% Win</code> | <code>{fakeout_rate:.0f}% Fakeout</code> ({total_decided} trades)"
+                    f"  • <b>{clean_cat}</b>: <code>{win_rate:.0f}% Win</code> | <code>{fakeout_rate:.0f}% Fakeout</code> ({total_decided} simulated)"
                 )
-                
+
         if not lines:
             return None
-            
-        header = "🎯 <b>Catalyst Reliability (Sample &ge; 3):</b>\n"
+
+        # These counters come from record_outcome(), which is called for every position
+        # the trailing stop closes -- and every alert registers a position whether or not
+        # the trader took it. So this is the simulated trailing stop's record, not the
+        # account's: 249 of these "closures" were contracts nobody ever bought. Labelled
+        # rather than removed, because the simulation is still the only per-catalyst
+        # signal that exists; what was wrong was presenting it as a track record.
+        header = ("🎯 <b>Catalyst Reliability</b> <i>(simulated trailing stop, not "
+                  "trades taken)</i>\n")
         return header + "\n".join(lines)
 
     async def get_session(self) -> aiohttp.ClientSession:

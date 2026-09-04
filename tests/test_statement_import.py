@@ -144,6 +144,58 @@ class TestAlertMatching:
         assert fills[1]["matched_alert_id"] is None, "unalerted ticker"
         assert fills[2]["matched_alert_id"] is None, "entry BEFORE the alert"
 
+    def test_the_side_must_agree(self):
+        """The first real import matched 8 contracts, 5 of them the opposite side from
+        the alert: the bot said puts on PLTR, AMZN and AAPL and the account bought calls.
+        Ticker and date alone are not evidence."""
+        fills = [
+            {"ticker": "PLTR", "option_type": "CALL", "open_date": "2026-08-25",
+             "matched_alert_id": None, "matched_alert_table": None, "alert_lag_days": None},
+        ]
+        alerts = [{"id": 7, "ticker": "PLTR", "direction": "Short",
+                   "_date": datetime.date(2026, 8, 24), "_table": "trade_log"}]
+        assert rh.match(fills, alerts, window_days=3) == 0
+        assert fills[0]["matched_alert_id"] is None
+
+    def test_the_same_side_still_matches(self):
+        fills = [
+            {"ticker": "PLTR", "option_type": "CALL", "open_date": "2026-08-25",
+             "matched_alert_id": None, "matched_alert_table": None, "alert_lag_days": None},
+        ]
+        alerts = [{"id": 7, "ticker": "PLTR", "direction": "Long",
+                   "_date": datetime.date(2026, 8, 24), "_table": "trade_log"}]
+        assert rh.match(fills, alerts, window_days=3) == 1
+
+    def test_one_alert_cannot_claim_both_sides(self):
+        """A single GLD alert was matched to a call AND a put on the same strike, the
+        same day. Whatever caused that straddle, it was not one directional alert."""
+        fills = [
+            {"ticker": "GLD", "option_type": "CALL", "open_date": "2026-08-24",
+             "matched_alert_id": None, "matched_alert_table": None, "alert_lag_days": None},
+            {"ticker": "GLD", "option_type": "PUT", "open_date": "2026-08-24",
+             "matched_alert_id": None, "matched_alert_table": None, "alert_lag_days": None},
+        ]
+        alerts = [{"id": 46, "ticker": "GLD", "direction": "Long",
+                   "_date": datetime.date(2026, 8, 24), "_table": "trade_log_archive"}]
+        assert rh.match(fills, alerts, window_days=3) == 1
+        assert [f["matched_alert_id"] for f in fills] == [46, None]
+
+    @pytest.mark.parametrize("direction,expected", [
+        ("Long", "CALL"), ("long", "CALL"), ("Short", "PUT"), ("short", "PUT"),
+        ("", None), (None, None),
+    ])
+    def test_implied_side(self, direction, expected):
+        assert rh.implied_option_type({"direction": direction}) == expected
+
+    def test_an_alert_with_no_direction_does_not_block_a_match(self):
+        """Older rows predate the column; absent is unknown, not disagreement."""
+        fills = [{"ticker": "PLTR", "option_type": "CALL", "open_date": "2026-08-25",
+                  "matched_alert_id": None, "matched_alert_table": None,
+                  "alert_lag_days": None}]
+        alerts = [{"id": 7, "ticker": "PLTR", "_date": datetime.date(2026, 8, 24),
+                   "_table": "trade_log"}]
+        assert rh.match(fills, alerts, window_days=3) == 1
+
     def test_records_which_table_the_alert_came_from(self):
         """trade_log and trade_log_archive autoincrement separately; 61 ids collide."""
         fills = [{"ticker": "PLTR", "open_date": "2026-08-25", "matched_alert_id": None,

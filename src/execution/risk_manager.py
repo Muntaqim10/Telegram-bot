@@ -61,8 +61,13 @@ PRICE_STALE_AFTER_SECONDS = 3600
 # the file is first created: when a column was added later, existing files kept a stale
 # 7-column header while new rows carried 8 fields, which made the whole log unparseable
 # by pandas and silently unusable for calibration.
+# "confirmed" is the column that says whether a row is money or a simulation. Every alert
+# registers a speculative position and the trailing stop closes all of them, so most rows
+# here are outcomes for contracts nobody bought -- 873 rows, of which 249 closed as
+# INVALIDATED without a trade behind them. Training on the file as a whole means training
+# on the trailing stop's counterfactual and calling it experience.
 OUTCOME_CSV_COLUMNS = ["timestamp", "ticker", "direction", "entry_price", "exit_price",
-                       "outcome", "pnl_pct", "estimated_option_pnl_pct"]
+                       "outcome", "pnl_pct", "estimated_option_pnl_pct", "confirmed"]
 _outcome_header_checked = False
 
 class RiskManager:
@@ -525,7 +530,8 @@ class RiskManager:
                     f"{exit_price:.2f}",
                     outcome_status,
                     f"{pnl_pct:.4f}",
-                    opt_pnl_str
+                    opt_pnl_str,
+                    "1" if pos.get("confirmed") else "0"
                 ])
             opt_log = f", Option PnL Est: {estimated_option_pnl_pct*100:.1f}%" if estimated_option_pnl_pct is not None else ""
             log.info(f"[{ticker}] TRADE CLOSED: {outcome_status}. Stock PnL: {pnl_pct*100:.2f}%{opt_log} (Exit: ${exit_price:.2f})")

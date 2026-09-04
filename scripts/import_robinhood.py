@@ -181,8 +181,32 @@ def load_alerts():
     return [a for a in out if a.get("_date")]
 
 
+def implied_option_type(alert):
+    """The contract an alert argues for. Long -> calls, Short -> puts."""
+    direction = (alert.get("direction") or "").strip().lower()
+    if direction.startswith("long"):
+        return "CALL"
+    if direction.startswith("short"):
+        return "PUT"
+    return None
+
+
 def match(fills, alerts, window_days):
-    """Attach each fill to the most recent preceding alert on the same ticker."""
+    """Attach each fill to a preceding alert on the same ticker AND the same side.
+
+    Ticker and date alone are not evidence. On the first statement this matched 8
+    contracts, of which 5 were the opposite side from the alert -- the bot said puts on
+    PLTR, AMZN and AAPL and the account bought calls -- and one GLD alert was matched to
+    both a call and a put on the same strike the same day, which no single alert can have
+    caused. All 8 were same-day round trips, while the bot proposes 14-21 DTE contracts
+    on a multi-day thesis.
+
+    Requiring the side to agree is the cheapest available filter. It is still not proof
+    the alert caused the trade: these are liquid names the account trades anyway, so a
+    coincidence on ticker, date AND direction remains ordinary. Only /took establishes
+    that, which is why the report below counts confirmations separately and never calls
+    a statement match alert-driven.
+    """
     by_ticker = defaultdict(list)
     for a in alerts:
         by_ticker[(a.get("ticker") or "").upper()].append(a)
@@ -192,6 +216,9 @@ def match(fills, alerts, window_days):
         opened = datetime.date.fromisoformat(f["open_date"])
         best, best_lag = None, None
         for a in by_ticker.get(f["ticker"], []):
+            side = implied_option_type(a)
+            if side is not None and f.get("option_type") and side != f["option_type"]:
+                continue
             lag = (opened - a["_date"]).days
             if 0 <= lag <= window_days and (best_lag is None or lag < best_lag):
                 best, best_lag = a, lag
@@ -230,9 +257,12 @@ def report(fills, alerts, window_days):
           f"(excludes {len(fills) - len(decided)} exercised/open)")
     print(f"  bot alerts on record:  {len(alerts)}" + (f"  ({lo} .. {hi})" if lo else ""))
     print(f"  contracts opened in that window: {len(in_window)}")
-    print(f"  matched to an alert:   {len(took)}  (entered within {window_days} day(s))")
-    if alerts:
-        print(f"  alert follow-through:  {pct(len(took), len(alerts))} of alerts were acted on")
+    print(f"  possible alert matches:{len(took)}  (same ticker, same side, within "
+          f"{window_days} day(s))")
+    print("     ^ a coincidence filter, NOT evidence the alert was traded. These are")
+    print("       liquid names the account trades anyway. Only /took confirms a trade,")
+    print("       and no position has ever been confirmed, so the bot's real track")
+    print("       record is 0 trades -- treat every figure below as the account's own.")
 
     def block(label, group):
         if not group:

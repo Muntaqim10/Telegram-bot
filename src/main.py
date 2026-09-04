@@ -417,7 +417,13 @@ class IntradayEngine:
                         if outcome["status"] == "TP_HIT_TRAILING":
                             # Target reached but the position stays open on a tighter
                             # trail, so the move is allowed to keep going.
-                            asyncio.create_task(self._dispatch_exit_alert(ticker, pos, outcome))
+                            #
+                            # Gated on /took like the exit branch below. Every alert
+                            # registers a speculative position and the trailing stop runs
+                            # on all of them, so without this the bot congratulates the
+                            # trader on a target hit for a contract they never bought.
+                            if pos.get("confirmed"):
+                                asyncio.create_task(self._dispatch_exit_alert(ticker, pos, outcome))
 
                         elif outcome["status"] in ("STOPPED_OUT", "TP_HIT", "INVALIDATED", "RUNNER_STOPPED"):
                             confirmed = bool(pos.get("confirmed"))
