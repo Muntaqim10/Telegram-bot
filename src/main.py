@@ -100,9 +100,6 @@ class IntradayEngine:
         from src.execution.signal_pipeline import SignalPipeline
         self.options_pricer = OptionsPricer(TRADIER_TOKEN)
         self.news_fetcher = NewsFetcher()
-        from src.data.hourly_snapshot import HourlySnapshotEngine
-        self.snapshot_engine = HourlySnapshotEngine(TRADIER_TOKEN)
-        self._last_snapshot_hour = -1
         self._last_expiration_check_hour = -1
         # Tickers already warned about a missing daily ATR. The warning below sits in the
         # per-tick path, and atr_cache is empty until the hourly Donchian scan completes,
@@ -201,26 +198,18 @@ class IntradayEngine:
                 log.error(f"Daily reset loop error: {e}")
             await asyncio.sleep(30)  # Check every 30 seconds
             
-    async def run_hourly_snapshot_loop(self):
-        """Dispatches an hourly market breadth and momentum pulse card to Telegram during trading hours,
-        and warns hourly about tracked positions whose option is about to expire."""
-        log.info("⏱️ [HOURLY SNAPSHOT] Starting hourly snapshot loop...")
+    async def run_hourly_position_sweep_loop(self):
+        """Warns hourly about tracked positions whose option is about to expire, and about
+        positions that have stalled or lost premium.
+
+        This also dispatched an hourly market-pulse card. That card was breadth the trader
+        could read off any chart, it said nothing about the positions actually held, and it
+        spent eight of the day's Telegram sends -- against a limit of roughly one message
+        per second per chat, which had already cost a full session of alerts."""
+        log.info("⏱️ [POSITION SWEEP] Starting hourly position sweep loop...")
         while True:
             try:
                 now = pd.Timestamp.now(tz="US/Eastern")
-                try:
-                    # Run between 9:30 AM and 4:00 PM EST at the top of each hour (10:00, 11:00, 12:00, 13:00, 14:00, 15:00, 16:00)
-                    if (9 <= now.hour <= 16) and now.minute == 0 and self._last_snapshot_hour != now.hour:
-                        session = await self.get_shared_session()
-                        card = await self.snapshot_engine.generate_market_snapshot(session=session, alert_gateway=self.alerts)
-                        if card:
-                            await self.alerts.dispatch_informational(card)
-                            self._last_snapshot_hour = now.hour
-                            log.info(f"⏱️ [HOURLY SNAPSHOT] Dispatched market pulse snapshot for {now.strftime('%I:%M %p EST')}")
-                except Exception as e:
-                    # Isolated so a snapshot failure never skips the expiration sweep below.
-                    log.error(f"Hourly snapshot error: {e}")
-
                 # Expiration sweep: once per hour during market hours, flag any tracked
                 # position whose option is about to expire and was never marked closed.
                 if (9 <= now.hour <= 16) and self._last_expiration_check_hour != now.hour:
@@ -228,7 +217,7 @@ class IntradayEngine:
                     await self._dispatch_expiration_warnings(now)
                     await self._dispatch_health_alerts(now)
             except Exception as e:
-                log.error(f"Hourly snapshot loop error: {e}")
+                log.error(f"Hourly position sweep loop error: {e}")
             await asyncio.sleep(30)
 
     async def _dispatch_exit_alert(self, ticker: str, pos: dict, outcome: dict) -> None:
@@ -552,7 +541,7 @@ async def lifespan(app: FastAPI):
     app.state.extended_task = asyncio.create_task(app.state.engine.run_extended_hours_scanner_loop())
     app.state.scanner_task = asyncio.create_task(app.state.engine.run_dynamic_scanner_loop())
     app.state.donchian_task = asyncio.create_task(app.state.engine.run_donchian_scanner_loop())
-    app.state.snapshot_task = asyncio.create_task(app.state.engine.run_hourly_snapshot_loop())
+    app.state.position_sweep_task = asyncio.create_task(app.state.engine.run_hourly_position_sweep_loop())
     app.state.daily_reset_task = asyncio.create_task(app.state.engine.run_daily_reset_loop())
     app.state.stream_task = asyncio.create_task(app.state.engine.market_stream.run())
     app.state.processor_task = asyncio.create_task(app.state.engine.process_events())
@@ -565,7 +554,7 @@ async def lifespan(app: FastAPI):
     app.state.extended_task.cancel()
     app.state.scanner_task.cancel()
     app.state.donchian_task.cancel()
-    app.state.snapshot_task.cancel()
+    app.state.position_sweep_task.cancel()
     app.state.daily_reset_task.cancel()
     app.state.stream_task.cancel()
     app.state.processor_task.cancel()
