@@ -93,6 +93,15 @@ may run UTC, and entry dates recorded from an evening signal will land a day ahe
 | Source | What it is | Trust |
 |---|---|---|
 | `real_fills` | Robinhood statement + `/closed` fills | Money |
+
+A contract past its expiry that was never sold and never exercised expired
+worthless -- `exit_kind='EXPIRED_WORTHLESS'`, a -100% loss. The importer used to
+mark these `OPEN` whenever the statement carried no `OEXP` row and drop them from
+P&L, which reported the account at +$16,682 while it had spent $16,474 on
+contracts that went to zero. The corrected lifetime figure is **+$207 on 320
+contracts, 42.2% win** -- essentially break-even, with 2026 (+$8,369) offsetting
+2019 and 2025. Run `scripts/import_robinhood.py --reconcile-expired` after any
+import; it needs no statement.
 | `trade_log` / `trade_log_archive` | alerts, and simulated trailing-stop outcomes | Counterfactual |
 | `data/ml_training_data_v2.parquet` | backtest simulation | Furthest from reality |
 

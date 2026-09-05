@@ -128,9 +128,25 @@ def build_fills(rows):
             pnl_pct = pnl / cost if cost else None
 
         try:
-            expiration = datetime.datetime.strptime(exp_raw, "%m/%d/%Y").date().isoformat()
+            exp_date = datetime.datetime.strptime(exp_raw, "%m/%d/%Y").date()
+            expiration = exp_date.isoformat()
         except ValueError:
-            expiration = exp_raw
+            exp_date, expiration = None, exp_raw
+
+        # A long contract past its expiry that was never sold and never exercised expired
+        # worthless. That is a -100% loss, not an open position.
+        #
+        # The branch above only fires when the statement carries a matching OEXP row, and
+        # 31 contracts had none -- TSLA calls from 2019, BAC from 2020. They sat as OPEN
+        # and were excluded from P&L, which is why the account read +$16,682 when it had
+        # actually spent $16,474 on contracts that went to zero. The true figure is
+        # roughly break-even. Whatever the statement omitted, the expiration date alone
+        # settles it, so this no longer depends on the export's formatting.
+        if kind == "OPEN" and exp_date and exp_date < datetime.date.today():
+            close_date = exp_date
+            exit_price, proceeds, kind = 0.0, 0.0, "EXPIRED_WORTHLESS"
+            pnl = -cost
+            pnl_pct = -1.0
 
         fills.append({
             "contract": f"{ticker} {expiration} {opt_type} {strike}",
@@ -309,15 +325,74 @@ def report(fills, alerts, window_days):
     print("=" * 74)
 
 
+def reconcile_expired(db_path, dry_run=False):
+    """Settle already-imported rows that are past expiry but still marked OPEN.
+
+    Same rule as the importer, applied to rows written before it had that rule. It needs
+    no statement: a long contract past its expiration date with no sale and no exercise
+    expired worthless. 31 such rows were carrying $16,474 of cost excluded from P&L.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    today = datetime.date.today().isoformat()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT id, contract, cost, open_date, expiration FROM real_fills "
+        "WHERE pnl IS NULL AND exit_kind = 'OPEN' AND expiration < ?", (today,))]
+    if not rows:
+        print("  nothing to reconcile: no expired contracts left marked OPEN.")
+        conn.close()
+        return 0
+
+    total = sum(r["cost"] or 0 for r in rows)
+    print(f"  {len(rows)} contract(s) past expiry still marked OPEN, "
+          f"${total:,.2f} of cost excluded from P&L:")
+    for r in sorted(rows, key=lambda x: -(x["cost"] or 0))[:8]:
+        print(f"    {r['contract']:38} cost ${r['cost'] or 0:>9,.2f}  expired {r['expiration']}")
+    if len(rows) > 8:
+        print(f"    ...and {len(rows) - 8} more")
+
+    if dry_run:
+        print("  --dry-run: nothing written.")
+        conn.close()
+        return 0
+
+    for r in rows:
+        try:
+            held = (datetime.date.fromisoformat(r["expiration"])
+                    - datetime.date.fromisoformat(r["open_date"])).days
+        except Exception:
+            held = None
+        conn.execute(
+            "UPDATE real_fills SET exit_kind='EXPIRED_WORTHLESS', close_date=?, "
+            "exit_price=0, proceeds=0, pnl=?, pnl_pct=-1.0, days_held=? WHERE id=?",
+            (r["expiration"], -(r["cost"] or 0), held, r["id"]))
+    conn.commit()
+    conn.close()
+    print(f"  settled {len(rows)} contract(s) at -100%.")
+    return len(rows)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("statement", help="Robinhood activity CSV export")
+    ap.add_argument("statement", nargs="?", help="Robinhood activity CSV export")
     ap.add_argument("--dry-run", action="store_true", help="report without writing")
     ap.add_argument("--match-window", type=int, default=3,
                     help="days after an alert in which an entry counts as taking it (default 3)")
+    ap.add_argument("--reconcile-expired", action="store_true",
+                    help="settle already-imported contracts that are past expiry but "
+                         "still marked OPEN; needs no statement")
     args = ap.parse_args()
 
+    if args.reconcile_expired:
+        print("RECONCILING EXPIRED CONTRACTS")
+        import src.database as db
+        reconcile_expired(db.DB_PATH, dry_run=args.dry_run)
+        return 0
+
+    if not args.statement:
+        print("Need a statement CSV, or --reconcile-expired.")
+        return 1
     if not os.path.exists(args.statement):
         print(f"No such file: {args.statement}")
         return 1

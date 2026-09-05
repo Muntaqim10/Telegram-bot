@@ -237,3 +237,57 @@ class TestIdempotency:
         isolated_db._upsert_real_fills_sync(self._sample())
         isolated_db._upsert_real_fills_sync(self._sample(pnl=999.0))
         assert isolated_db.get_real_fills_sync()[0]["pnl"] == 999.0
+
+
+class TestExpiredWorthless:
+    """A long contract past its expiry, never sold and never exercised, is a -100% loss.
+
+    The importer only marked EXPIRED when the statement carried a matching OEXP row.
+    31 contracts had none -- TSLA calls from 2019, BAC from 2020 -- so they sat as OPEN
+    and were excluded from P&L entirely. That is why the account read +$16,682 when it
+    had spent $16,474 on contracts that went to zero; the true figure is +$207.
+    """
+
+    def _fills(self, statement, expiry, opened):
+        return rh.build_fills(rh.parse_statement(statement(
+            f'"{opened}","{opened}","{opened}","ZZ","ZZ {expiry} Call $10.00",'
+            f'"BTO","1","1.00","($100.00)"')))
+
+    def test_a_past_expiry_with_no_close_is_a_total_loss(self, statement):
+        f = self._fills(statement, "1/17/2020", "1/02/2020")
+        assert len(f) == 1
+        assert f[0]["exit_kind"] == "EXPIRED_WORTHLESS"
+        assert f[0]["pnl"] == -100.0
+        assert f[0]["pnl_pct"] == -1.0
+        assert f[0]["proceeds"] == 0.0
+
+    def test_it_is_dated_to_the_expiry(self, statement):
+        f = self._fills(statement, "1/17/2020", "1/02/2020")
+        assert f[0]["close_date"] == "2020-01-17"
+        assert f[0]["days_held"] == 15
+
+    def test_a_future_expiry_stays_open(self, statement):
+        """Genuinely open positions must not be settled at -100%."""
+        f = self._fills(statement, "12/19/2099", "1/02/2020")
+        assert f[0]["exit_kind"] == "OPEN"
+        assert f[0]["pnl"] is None
+
+    def test_a_sold_contract_is_untouched(self, statement):
+        f = rh.build_fills(rh.parse_statement(statement(
+            '"1/02/2020","1/02/2020","1/02/2020","ZZ","ZZ 1/17/2020 Call $10.00",'
+            '"BTO","1","1.00","($100.00)"',
+            '"1/10/2020","1/10/2020","1/10/2020","ZZ","ZZ 1/17/2020 Call $10.00",'
+            '"STC","1","1.50","$150.00"')))
+        assert f[0]["exit_kind"] == "SOLD"
+        assert f[0]["pnl"] == 50.0
+
+    def test_an_exercised_contract_is_still_excluded(self, statement):
+        """Its value moved into shares; the statement alone cannot price it, so it must
+        not be counted as a wipeout."""
+        f = rh.build_fills(rh.parse_statement(statement(
+            '"1/02/2020","1/02/2020","1/02/2020","ZZ","ZZ 1/17/2020 Call $10.00",'
+            '"BTO","1","1.00","($100.00)"',
+            '"1/17/2020","1/17/2020","1/17/2020","ZZ","ZZ 1/17/2020 Call $10.00",'
+            '"OEXCS","1","","$0.00"')))
+        assert f[0]["exit_kind"] == "EXERCISED"
+        assert f[0]["pnl"] is None
