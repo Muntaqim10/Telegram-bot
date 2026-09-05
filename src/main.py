@@ -101,6 +101,7 @@ class IntradayEngine:
         self.options_pricer = OptionsPricer(TRADIER_TOKEN)
         self.news_fetcher = NewsFetcher()
         self._last_expiration_check_hour = -1
+        self._last_confirm_prompt_date = None
         # Tickers already warned about a missing daily ATR. The warning below sits in the
         # per-tick path, and atr_cache is empty until the hourly Donchian scan completes,
         # so without this it fires several times a second per position.
@@ -216,6 +217,14 @@ class IntradayEngine:
                     self._last_expiration_check_hour = now.hour
                     await self._dispatch_expiration_warnings(now)
                     await self._dispatch_health_alerts(now)
+
+                # One confirmation prompt after the close, before the next reset drops
+                # the day's unconfirmed alerts. Weekdays only -- the reset is what makes
+                # this time-critical, and it does not run at the weekend either.
+                if (now.hour == 16 and now.minute >= 10 and now.weekday() < 5
+                        and self._last_confirm_prompt_date != now.date()):
+                    self._last_confirm_prompt_date = now.date()
+                    await self._dispatch_confirmation_prompt(now)
             except Exception as e:
                 log.error(f"Hourly position sweep loop error: {e}")
             await asyncio.sleep(30)
@@ -310,6 +319,51 @@ class IntradayEngine:
             else:
                 self.risk_manager.requeue_warning(ticker, flag)
                 log.error(f"[{ticker}] {reason} dispatch FAILED; re-queued for the next sweep.")
+
+    async def _dispatch_confirmation_prompt(self, now):
+        """Asks, once after the close, which of the day's alerts were actually taken.
+
+        This is the only thing standing between the bot and having a track record. It has
+        produced 523 alerts and holds zero confirmed positions, so every performance
+        number it reports -- catalyst reliability, calibration, per-setup win rates -- is
+        the trailing stop's simulation rather than the account's. The statement importer
+        cannot fill the gap either: matching on ticker and date paired five of eight fills
+        to alerts pointing the opposite way.
+
+        Unconfirmed alerts are dropped at the next daily reset, so this fires after the
+        close while the day is still recoverable.
+        """
+        split = self.risk_manager.list_positions()
+        unconfirmed = split["unconfirmed"]
+        if not unconfirmed:
+            return
+
+        held = len(split["confirmed"])
+        lines = [
+            "📋 <b>END OF DAY — which of these did you take?</b>",
+            "",
+            f"{len(unconfirmed)} alert(s) today are unconfirmed. Reply <code>/took TICKER</code> "
+            f"for any you actually traded — add quantity and your real fill if it differed, "
+            f"e.g. <code>/took NVDA 2 15.10</code>.",
+            "",
+        ]
+        for ticker, pos in sorted(unconfirmed)[:25]:
+            entry = pos.get("entry_price")
+            direction = pos.get("direction", "")
+            premium = pos.get("option_entry_price")
+            prem = f" @ ${premium:.2f}" if premium else ""
+            price = f"${entry:.2f}" if entry else "n/a"
+            lines.append(f"  • <code>/took {ticker}</code>  {direction} {price}{prem}")
+        if len(unconfirmed) > 25:
+            lines.append(f"  …and {len(unconfirmed) - 25} more — send /positions for the rest.")
+        lines += [
+            "",
+            f"<i>Confirmed holdings: {held}. Anything left unconfirmed is dropped at "
+            f"tomorrow's reset and never graded.</i>",
+        ]
+
+        if not await self.alerts.dispatch_informational("\n".join(lines)):
+            log.error("📋 [CONFIRM] End-of-day confirmation prompt FAILED to send.")
 
     async def _dispatch_expiration_warnings(self, now):
         """Sends one Telegram warning per position nearing expiration.

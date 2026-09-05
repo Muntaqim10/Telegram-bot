@@ -27,6 +27,12 @@ except ValueError:
 # loss rather than a preference. EARNINGS_GATE=off restores the old behaviour.
 EARNINGS_GATE = os.getenv("EARNINGS_GATE", "on").strip().lower() not in ("0", "off", "false", "no")
 
+# Setups to stop alerting on, as a comma-separated list of catalyst_type strings.
+# Empty by default -- see the gate in process_signal for why nothing is cut yet.
+SETUP_BLOCKLIST = frozenset(
+    s.strip() for s in (os.getenv("SETUP_BLOCKLIST") or "").split(",") if s.strip()
+)
+
 
 def format_signal_timestamp(signal: Dict[str, Any]) -> str:
     """The alert time, as trade_log records it.
@@ -67,6 +73,24 @@ class SignalPipeline:
         """Passes the raw signal through AI filters before alerting."""
         ticker = signal["ticker"]
         direction = signal["direction"]
+
+        # 0a. Setup blocklist. Retiring a setup should be a config change, not a code
+        # change, so that turning one off is reversible and dated.
+        #
+        # Nothing is disabled by default, deliberately. The per-setup numbers look
+        # decisive (DUAL ORB+CRB CALL BREAKOUT: 81 alerts, 45.7% win, -3.29% at 3 days)
+        # but every setup has only fired on 3-6 distinct days, and alerts within a day
+        # move together -- so the honest sample is the day count, not the alert count.
+        # No setup's win rate differs from a coin flip at p<0.05 once that is accounted
+        # for. Cutting the highest-volume setup on five days of data would be guessing.
+        #
+        # Populate SETUP_BLOCKLIST when scripts/check_setup_performance.py reports
+        # enough independent days to mean something.
+        setup = (signal.get("catalyst_type") or "").strip()
+        if setup and setup in SETUP_BLOCKLIST:
+            log.warning(f"[{ticker}] Alert BLOCKED by setup blocklist: '{setup}' is "
+                        f"disabled via SETUP_BLOCKLIST.")
+            return
 
         # 0. Verified Backtested Universe Gate: Strictly enforce CANDIDATE_POOL
         from src.data.dynamic_scanner import CANDIDATE_POOL
