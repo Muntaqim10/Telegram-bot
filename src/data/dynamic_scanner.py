@@ -6,7 +6,18 @@ from typing import List
 log = logging.getLogger(__name__)
 
 # Broad pool of 250+ dynamic candidates optimized for HIGH OPTIONS LEVERAGE (High Beta, High IV, Liquid Option Chains)
-CANDIDATE_POOL = [
+#
+# This list is also the alert gate: signal_pipeline blocks any ticker outside it, which
+# makes it the tightest constraint in the system -- and it was costing the bot the market.
+# Screened against an independent universe (4,728 primary-exchange common stocks from
+# Finnhub, narrowed to 1,169 liquid names with full-year history), only 3 of 2026's top
+# 25 performers were in here and 9 of the top 100. IRON (+1268%), AEHR (+289%) and AXTI
+# (+268%) were never subscribed, so nothing downstream could ever have alerted them.
+#
+# Now a default rather than a fixed list: scripts/build_universe.py regenerates a
+# screened pool into config/universe.txt, which this loads when present. The list below
+# stays as the fallback so a missing or truncated file cannot silence the bot.
+_DEFAULT_CANDIDATE_POOL = [
     # Core Indexes & Mag 7
     "SPY", "QQQ", "IWM", "DIA", "GLD", "SLV", "TLT", "SMH", "XLE", "XLF", "XLK",
     "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA",
@@ -41,6 +52,40 @@ CANDIDATE_POOL = [
     # High-Short, Squeeze & High-Momentum Favorites
     "GME", "AMC", "DJT", "RIVN", "LCID", "CHWY", "KSS", "BYND", "SPCE", "OPEN", "AI"
 ]
+
+
+def _load_universe() -> List[str]:
+    """The eligible universe: config/universe.txt when present, else the list above.
+
+    One ticker per line; blank lines and # comments ignored. Falls back completely on
+    any problem -- a truncated file would otherwise narrow the alert gate silently,
+    which is the exact failure this change exists to fix.
+    """
+    path = os.getenv("UNIVERSE_FILE") or os.path.join(
+        os.path.dirname(__file__), "..", "..", "config", "universe.txt")
+    try:
+        with open(os.path.abspath(path), encoding="utf-8") as f:
+            tickers = [ln.strip().upper() for ln in f
+                       if ln.strip() and not ln.lstrip().startswith("#")]
+    except FileNotFoundError:
+        return list(_DEFAULT_CANDIDATE_POOL)
+    except Exception as e:
+        log.warning("Could not read universe file %s (%s); using the built-in pool.", path, e)
+        return list(_DEFAULT_CANDIDATE_POOL)
+
+    # Smaller than the built-in list is more likely truncation than intent.
+    if len(tickers) < len(_DEFAULT_CANDIDATE_POOL):
+        log.warning("Universe file has %d tickers, fewer than the %d built in; using the "
+                    "built-in pool instead.", len(tickers), len(_DEFAULT_CANDIDATE_POOL))
+        return list(_DEFAULT_CANDIDATE_POOL)
+
+    merged = list(dict.fromkeys(tickers + list(_DEFAULT_CANDIDATE_POOL)))
+    log.info("Universe loaded from %s: %d tickers (%d from file, built-in pool merged).",
+             path, len(merged), len(tickers))
+    return merged
+
+
+CANDIDATE_POOL = _load_universe()
 
 MEGA_CAP_TICKERS = {
     "SPY", "QQQ", "IWM", "DIA", "GLD", "SLV", "TLT", "SMH", "XLE", "XLF", "XLK",
