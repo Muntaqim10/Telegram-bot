@@ -11,7 +11,7 @@ from datetime import datetime
 import aiohttp
 
 from typing import Any, Optional
-from src.database import add_trade
+from src.database import add_trade, open_paper_trade
 from src.utils.telegram_formatter import format_telegram_alert
 
 # ── Configuration ──────────────────────────────────────────────────────────
@@ -389,6 +389,9 @@ class AlertGateway:
                 "target_strike": getattr(signal, "target_strike", None),
                 "expiry": getattr(signal, "expiry", None),
                 "option_type": getattr(signal, "option_type", None),
+                # The exact contract. Shown in the card since forever, journalled only
+                # now -- without it an alert cannot be marked against a real quote later.
+                "occ_symbol": getattr(signal, "occ_symbol", None),
                 "sentiment_score": getattr(signal, "sentiment_score", None),
                 "expected_move_pct": getattr(signal, "expected_move_pct", None),
                 "vwap_ratio": getattr(signal, "vwap_ratio", None),
@@ -403,6 +406,36 @@ class AlertGateway:
             await add_trade(trade_data)
         except Exception as e:
             log.error("AlertGateway.dispatch_high_conviction failed to journal trade for %s to SQLite: %s", signal.ticker, e)
+
+        # 2b. Open a paper trade on the contract this alert actually named.
+        #
+        # The alerter has produced 523 alerts and zero confirmed positions, so nothing it
+        # reports about itself is evidence. This is the way out that does not depend on
+        # anyone trading: enter at the ask that was quoted, close later at the real bid,
+        # and after ~20 sessions the per-setup numbers are about money rather than about
+        # a trailing stop's imagination. Failure here must never cost the alert.
+        try:
+            opened = await open_paper_trade({
+                "opened_at": trade_data["timestamp"],
+                "ticker": signal.ticker,
+                "setup": getattr(signal, "strategy_type", None),
+                "direction": signal.signal_direction,
+                "occ_symbol": getattr(signal, "occ_symbol", None),
+                "strike": getattr(signal, "target_strike", None),
+                "expiry": getattr(signal, "expiry", None),
+                "option_type": getattr(signal, "option_type", None),
+                "entry_ask": getattr(signal, "option_ask", None),
+                "entry_bid": getattr(signal, "option_bid", None),
+                "entry_spot": signal.price,
+                "entry_delta": getattr(signal, "delta", None),
+                "entry_theta": getattr(signal, "theta", None),
+                "entry_iv": getattr(signal, "iv", None),
+            })
+            if not opened:
+                log.info("[%s] No paper trade opened: no contract or no ask quoted.",
+                         signal.ticker)
+        except Exception as e:
+            log.error("AlertGateway paper-trade open failed for %s: %s", signal.ticker, e)
 
         # 3. Mobile-Optimized Premium Alert Template
         msg = format_telegram_alert(signal)

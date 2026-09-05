@@ -154,6 +154,10 @@ def _init_db_sync():
         ("rsi_14", "REAL"), ("sma20_ratio", "REAL"), ("sma_spread", "REAL"),
         ("z_vol", "REAL"), ("vwap_ratio", "REAL"), ("atr_pct", "REAL"),
         ("iv_rank", "REAL"), ("net_gex", "REAL"), ("flow_bias", "TEXT"),
+        # The exact contract. It was computed, shown in the Telegram card and then
+        # dropped, so an alert could never be looked up again -- and without it a paper
+        # trade cannot be marked against the real quote it would actually have got.
+        ("occ_symbol", "TEXT"),
     ]
     for table in ['trade_log', 'trade_log_archive']:
         for col, col_type in decision_cols:
@@ -204,6 +208,49 @@ def _init_db_sync():
         cursor.execute("ALTER TABLE real_fills ADD COLUMN matched_alert_table TEXT")
     except Exception:
         pass  # Column already exists
+    conn.commit()
+
+    # Forward paper trades: the honest way to grade an alerter nobody trades.
+    #
+    # 523 alerts have produced zero confirmed positions, so every performance number this
+    # system reports is the trailing stop's simulation. Confirmation cannot fix that if
+    # the trader never takes the alerts, and the backtest cannot either -- it prices with
+    # Black-Scholes on realized vol, and tests four setups that share nothing with the
+    # live alert stream.
+    #
+    # But going forward the chain IS retrievable. So each dispatched alert opens a paper
+    # trade against the contract it actually named, entered at the ASK it was quoted, and
+    # later marked and closed at the real BID. That is what the trade would have cost and
+    # returned, spread included, with no model in the middle.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS paper_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alert_id INTEGER,
+            alert_table TEXT,
+            opened_at TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            setup TEXT,
+            direction TEXT,
+            occ_symbol TEXT NOT NULL,
+            strike REAL,
+            expiry TEXT,
+            option_type TEXT,
+            entry_ask REAL NOT NULL,
+            entry_bid REAL,
+            entry_spot REAL,
+            entry_delta REAL,
+            entry_theta REAL,
+            entry_iv REAL,
+            marked_at TEXT,
+            mark_bid REAL,
+            closed_at TEXT,
+            exit_bid REAL,
+            exit_reason TEXT,
+            pnl_pct REAL,
+            days_held INTEGER,
+            UNIQUE(occ_symbol, opened_at)
+        )
+    """)
     conn.commit()
 
     _backfill_archive_outcomes(conn)
@@ -265,6 +312,72 @@ async def add_trade(trade: dict[str, Any]):
 async def archive_trade(trade: dict[str, Any]):
     """Add a trade to the archived trade log."""
     await asyncio.to_thread(_add_trade_sync, "trade_log_archive", trade)
+
+
+def _open_paper_trade_sync(row: dict[str, Any]) -> bool:
+    """Record what the alert would have cost, at the ask it was actually quoted.
+
+    Entry is the ASK because that is what a taker pays. The existing backtest used a
+    theoretical mid and charged 3% on exit only, which flatters every result by roughly
+    the spread. Returns False when the contract is unusable or already recorded.
+    """
+    if not row.get("occ_symbol") or not row.get("entry_ask"):
+        return False
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(paper_trades)")
+    cols = [r["name"] for r in cursor.fetchall()]
+    payload = {k: v for k, v in row.items() if k in cols}
+    try:
+        cursor.execute(
+            f"INSERT INTO paper_trades ({', '.join(payload)}) "
+            f"VALUES ({', '.join(['?'] * len(payload))})", tuple(payload.values()))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False  # same contract, same second -- a duplicate dispatch
+    finally:
+        conn.close()
+
+
+async def open_paper_trade(row: dict[str, Any]) -> bool:
+    """Open a paper trade for a dispatched alert. Never raises."""
+    try:
+        return await asyncio.to_thread(_open_paper_trade_sync, row)
+    except Exception as e:
+        log_err = f"open_paper_trade failed for {row.get('occ_symbol')}: {e}"
+        print(f"[DB] {log_err}")
+        return False
+
+
+def _open_paper_positions_sync() -> list[dict[str, Any]]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM paper_trades WHERE closed_at IS NULL ORDER BY opened_at")
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+async def open_paper_positions() -> list[dict[str, Any]]:
+    """Every paper trade still awaiting a close."""
+    return await asyncio.to_thread(_open_paper_positions_sync)
+
+
+def _settle_paper_trade_sync(trade_id: int, **fields) -> None:
+    conn = get_connection()
+    cursor = conn.cursor()
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    cursor.execute(f"UPDATE paper_trades SET {sets} WHERE id = ?",
+                   (*fields.values(), trade_id))
+    conn.commit()
+    conn.close()
+
+
+async def settle_paper_trade(trade_id: int, **fields) -> None:
+    """Mark a paper trade to market, or close it. Exit price is the BID -- what a seller
+    receives -- so the round trip pays the spread at both ends, as a real one does."""
+    await asyncio.to_thread(_settle_paper_trade_sync, trade_id, **fields)
 
 def _get_trades_sync(table: str) -> list[dict[str, Any]]:
     conn = get_connection()

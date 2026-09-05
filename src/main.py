@@ -225,6 +225,19 @@ class IntradayEngine:
                         and self._last_confirm_prompt_date != now.date()):
                     self._last_confirm_prompt_date = now.date()
                     await self._dispatch_confirmation_prompt(now)
+
+                    # Mark and close the paper book on the same schedule. Quotes are
+                    # still live just after the close, and this is the only record of
+                    # what the alerts would have done that does not depend on anyone
+                    # trading them.
+                    try:
+                        from src.execution import paper_book
+                        s = await self.get_shared_session()
+                        r = await paper_book.sweep(session=s, token=TRADIER_TOKEN)
+                        log.info("📄 [PAPER] %d open, %d marked, %d closed.",
+                                 r["open"], r["marked"], r["closed"])
+                    except Exception as e:
+                        log.error(f"Paper book sweep error: {e}")
             except Exception as e:
                 log.error(f"Hourly position sweep loop error: {e}")
             await asyncio.sleep(30)
