@@ -27,6 +27,10 @@ except ValueError:
 # loss rather than a preference. EARNINGS_GATE=off restores the old behaviour.
 EARNINGS_GATE = os.getenv("EARNINGS_GATE", "on").strip().lower() not in ("0", "off", "false", "no")
 
+# On by default, like the earnings gate: a put into an uptrend is a structural mistake
+# rather than a preference. TREND_GATE=off restores the old behaviour.
+TREND_GATE = os.getenv("TREND_GATE", "on").strip().lower() not in ("0", "off", "false", "no")
+
 # Setups to stop alerting on, as a comma-separated list of catalyst_type strings.
 # Empty by default -- see the gate in process_signal for why nothing is cut yet.
 SETUP_BLOCKLIST = frozenset(
@@ -248,6 +252,43 @@ class SignalPipeline:
                 if not missing:
                     log.info(f"[{ticker}] Scored on cached daily features "
                              f"(RSI {cached['rsi_14']}, SMA20 ratio {cached['sma20_ratio']}).")
+
+        # 3.55 Trend gate. Do not propose puts into an uptrend, or calls into a downtrend.
+        #
+        # Two conditions on the daily frame, and both matter:
+        #   sma_spread  = (SMA20 - SMA60) / SMA60   -- which way the trend points
+        #   sma20_ratio = close / SMA20             -- which side of it price sits on
+        #
+        # Measured over 328 alerts with three sessions of forward prices, requiring both
+        # separates where the trend alone does not:
+        #
+        #   aligned on both   n=187  win 50.8%  median +0.02%
+        #   not aligned       n=141  win 42.6%  median -0.93%
+        #   trend alone       n=218  win 48.6%  vs 44.5% against -- barely anything
+        #
+        # 43% of alerts were not fully aligned, so this removes about four in ten, and
+        # they are the worse four. Small sample (12 alert days), and the mean disagrees
+        # with the median because a few large winners sit on the wrong side, so this is
+        # a defensible default rather than a settled fact -- TREND_GATE=off restores the
+        # old behaviour.
+        #
+        # Fails open when the daily features are unavailable: an unmeasured trend is not
+        # a counter-trend signal, and before the bar-window fix these were absent for
+        # every alert.
+        if TREND_GATE and not missing:
+            spread = float(signal.get("sma_spread") or 0.0)
+            ratio = float(signal.get("sma20_ratio") or 1.0)
+            uptrend = spread > 0 and ratio > 1.0
+            downtrend = spread < 0 and ratio < 1.0
+            wanted = "uptrend" if direction == "Long" else "downtrend"
+            if (direction == "Long" and not uptrend) or (direction == "Short" and not downtrend):
+                log.warning(
+                    f"[{ticker}] {direction} alert BLOCKED by Trend Gate: needs a {wanted} "
+                    f"on the daily frame, but SMA20 vs SMA60 is {spread:+.3f} and price is "
+                    f"{(ratio - 1) * 100:+.2f}% vs SMA20. Set TREND_GATE=off to allow."
+                )
+                self.risk_manager.remove_position(ticker)
+                return
 
         if missing:
             features_supplied = False

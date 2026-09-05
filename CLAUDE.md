@@ -138,7 +138,17 @@ Behaviour-changing environment variables, all opt-in unless noted:
 - `RUNNER_MODE` / `RUNNER_TRAIL_ATR` — let a winner run past the target instead of closing
 - `RISK_MAX_LOSS_PER_WEEK` / `_PER_MONTH` / `RISK_MAX_PREMIUM_PER_TRADE` / `RISK_MAX_OPEN_POSITIONS`
 - `RETRAIN_AT` — retrain timestamp used to split calibration results
-- `EARNINGS_GATE` — **on by default**, the one exception. Blocks an entry whose contract
+- `TREND_GATE` — **on by default**. Blocks a put into an uptrend and a call into a
+  downtrend, judged on the daily frame: `sma_spread` for the trend direction and
+  `sma20_ratio` for which side of SMA20 price sits on. Both are required — over 328
+  alerts, aligned-on-both won 50.8% (median +0.02%) against 42.6% (median -0.93%) for
+  the rest, while the trend alone barely separated. Removes ~43% of alerts. Fails open
+  when the daily features are unavailable. `off` restores the old behaviour.
+- `SETUP_BLOCKLIST` — comma-separated `catalyst_type` strings to stop alerting on.
+  Empty by default; every setup has fired on only 3-6 days, so nothing is yet
+  distinguishable from a coin flip. See `scripts/check_setup_performance.py`.
+- `PAPER_HOLD_DAYS` — hold ceiling for the forward paper book (default 3).
+- `EARNINGS_GATE` — **on by default**, like the trend gate. Blocks an entry whose contract
   spans a known earnings date. `earnings_in_window` was computed and used only as an
   alert label, so the bot proposed a LULU call at $121.31 fifteen minutes before its
   print; it opened near $99. Fails open — the calendar does not know every ticker (AAPL
